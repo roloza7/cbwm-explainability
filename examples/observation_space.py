@@ -13,6 +13,7 @@ def main(cfg: DictConfig) -> None:
         "dreamer_v1",
         "dreamer_v2",
         "dreamer_v3",
+        "offline_dreamer",
         "p2e_dv1",
         "p2e_dv2",
         "p2e_dv3",

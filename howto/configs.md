@@ -1,6 +1,6 @@
 # Configurations
 
-This document explains how the configuration files and folders are structured. It will help you to understand how to use add new configuration files and where to put them. 
+This document explains how the configuration files and folders are structured. It will help you to understand how to use add new configuration files and where to put them.
 
 > [!WARNING]
 >
@@ -24,6 +24,7 @@ sheeprl/configs
 │   ├── dreamer_v3_XL.yaml
 │   ├── dreamer_v3_XS.yaml
 │   ├── dreamer_v3.yaml
+│   ├── offline_dreamer.yaml
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
@@ -79,6 +80,7 @@ sheeprl/configs
 │   ├── dreamer_v3_super_mario_bros.yaml
 │   ├── dreamer_v3_XL_crafter.yaml
 │   ├── dreamer_v3.yaml
+│   ├── offline_dreamer.yaml
 │   ├── droq.yaml
 │   ├── p2e_dv1_exploration.yaml
 │   ├── p2e_dv1_finetuning.yaml
@@ -115,6 +117,7 @@ sheeprl/configs
 │   ├── dreamer_v1.yaml
 │   ├── dreamer_v2.yaml
 │   ├── dreamer_v3.yaml
+│   ├── offline_dreamer.yaml
 │   ├── droq.yaml
 │   ├── p2e_dv1_exploration.yaml
 │   ├── p2e_dv1_finetuning.yaml
@@ -175,16 +178,16 @@ seed: 42
 # and to throw an error if an operation is known to be nondeterministic (and without a deterministic alternative).
 torch_use_deterministic_algorithms: False
 
-# Disabling the benchmarking feature with torch.backends.cudnn.benchmark = False 
+# Disabling the benchmarking feature with torch.backends.cudnn.benchmark = False
 # causes cuDNN to deterministically select an algorithm, possibly at the cost of reduced performance.
-# However, if you do not need reproducibility across multiple executions of your application, 
+# However, if you do not need reproducibility across multiple executions of your application,
 # then performance might improve if the benchmarking feature is enabled with torch.backends.cudnn.benchmark = True.
 torch_backends_cudnn_benchmark: True
 
 # While disabling CUDA convolution benchmarking (discussed above) ensures that CUDA selects the same algorithm each time an application is run,
 # that algorithm itself may be nondeterministic, unless either torch.use_deterministic_algorithms(True)
-# or torch.backends.cudnn.deterministic = True is set. 
-# The latter setting controls only this behavior, 
+# or torch.backends.cudnn.deterministic = True is set.
+# The latter setting controls only this behavior,
 # unlike torch.use_deterministic_algorithms() which will make other PyTorch operations behave deterministically, too.
 torch_backends_cudnn_deterministic: False
 
@@ -193,7 +196,7 @@ torch_backends_cudnn_deterministic: False
 # when executed on GPUs with the same architecture and the same number of SMs.
 # However, bit-wise reproducibility is not guaranteed across toolkit versions
 # because the implementation might differ due to some implementation changes.
-# This guarantee holds when a single CUDA stream is active only. 
+# This guarantee holds when a single CUDA stream is active only.
 # If multiple concurrent streams are active, the library may optimize total performance by picking different internal implementations.
 cublas_workspace_config: null  # Possible values are: ":4096:8" or ":16:8"
 
@@ -432,7 +435,7 @@ wrapper: ???
 ```
 
 > [!NOTE]
-> 
+>
 > The actions as observations wrapper is used for adding the last `n` actions to the observations. For more information, check the corresponding [howto file](./actions_as_observation.md).
 
 Every custom environment must then "inherit" from this default config, override the particular parameters, and define the `wrapper` field, which is the one that will be directly instantiated at runtime. The `wrapper` field must define all the specific parameters to be passed to the `_target_` function when the wrapper will be instantiated. Take for example the `atari.yaml` config:
@@ -501,7 +504,7 @@ buffer:
 algo:
   learning_starts: 1024
   total_steps: 100000
-  
+
   dense_units: 512
   mlp_layers: 2
   world_model:
@@ -515,7 +518,7 @@ algo:
       hidden_size: 512
 ```
 
-Given this config, one can easily run an experiment to test the Dreamer-V3 algorithm on the Ms-PacMan environment with the following simple CLI command: 
+Given this config, one can easily run an experiment to test the Dreamer-V3 algorithm on the Ms-PacMan environment with the following simple CLI command:
 
 ```bash
 python sheeprl.py exp=dreamer_v3_100k_ms_pacman
