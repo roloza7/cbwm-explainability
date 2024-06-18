@@ -173,3 +173,6 @@ mlartifacts
 examples/models
 session_*
 bin/
+
+# Package-specific
+bert
