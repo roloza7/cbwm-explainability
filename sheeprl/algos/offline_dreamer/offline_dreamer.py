@@ -8,7 +8,7 @@ import copy
 import os
 import warnings
 from functools import partial
-from typing import Any, Callable, Dict, Sequence, Tuple
+from typing import Any, Callable, Dict, Sequence, Tuple, Union
 
 import gymnasium as gym
 import hydra
@@ -22,7 +22,7 @@ from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 from torchmetrics import SumMetric
 
-from sheeprl.algos.offline_dreamer.agent import WorldModel, build_agent
+from sheeprl.algos.offline_dreamer.agent import WorldModel, CBWM, build_agent
 from sheeprl.algos.offline_dreamer.loss import reconstruction_loss
 from sheeprl.algos.offline_dreamer.utils import Moments, compute_lambda_values, prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
@@ -46,7 +46,7 @@ from sheeprl.utils.utils import Ratio, save_configs
 
 
 def dynamic_learning(
-    world_model: WorldModel,
+    world_model: Union[WorldModel, CBWM],
     data: Dict[str, Tensor],
     batch_actions: Tensor,
     embedded_obs: Dict[str, Tensor],
@@ -95,7 +95,11 @@ def dynamic_learning(
             priors_logits[i] = prior_logits
             posteriors[i] = posterior
             posteriors_logits[i] = posterior_logits
-    latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
+    if isinstance(world_model, CBWM):
+        print("RUNNING!!!!!!!!!")
+        latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
+    else:
+        latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
     return latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states
 
 
@@ -103,7 +107,7 @@ def behaviour_learning(
     posteriors: torch.Tensor,
     recurrent_states: torch.Tensor,
     data: Dict[str, torch.Tensor],
-    world_model: WorldModel,
+    world_model: Union[WorldModel, CBWM],
     actor: _FabricModule,
     stoch_state_size: int,
     recurrent_state_size: int,
@@ -159,7 +163,7 @@ def behaviour_learning(
 
 def train(
     fabric: Fabric,
-    world_model: WorldModel,
+    world_model: Union[WorldModel, CBWM],
     actor: _FabricModule,
     critic: _FabricModule,
     target_critic: torch.nn.Module,

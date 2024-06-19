@@ -934,6 +934,32 @@ class MinedojoActor(Actor):
         return tuple(actions), tuple(actions_dist)
 
 
+class CBWM(WorldModel):
+    """
+    Wrapper class for the Concept Bottleneck World model.
+
+    Args:
+        encoder (_FabricModule): the encoder.
+        rssm (RSSM): the rssm.
+        observation_model (_FabricModule): the observation model.
+        reward_model (_FabricModule): the reward model.
+        continue_model (_FabricModule, optional): the continue model.
+        cem (_FabricModule, optional): concept bottleneck model
+    """
+
+    def __init__(
+        self,
+        encoder: _FabricModule,
+        rssm: RSSM,
+        observation_model: _FabricModule,
+        reward_model: _FabricModule,
+        continue_model: Optional[_FabricModule],
+        cem: Optional[_FabricModule] = None,
+    ) -> None:
+        super().__init__(encoder, rssm, observation_model, reward_model, continue_model)
+        self.cem = cem
+
+
 def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
@@ -1127,13 +1153,23 @@ def build_agent(
             "normalized_shape": world_model_cfg.discount_model.dense_units,
         },
     )
-    world_model = WorldModel(
-        encoder.apply(init_weights),
-        rssm,
-        observation_model.apply(init_weights),
-        reward_model.apply(init_weights),
-        continue_model.apply(init_weights),
-    )
+    # world_model_cls = hydra.utils.get_class(world_model_cfg.worldmodelcls)
+    if world_model_cfg.cbm_model is False:
+        world_model = WorldModel(
+            encoder.apply(init_weights),
+            rssm,
+            observation_model.apply(init_weights),
+            reward_model.apply(init_weights),
+            continue_model.apply(init_weights),
+        )
+    else:
+        world_model = CBWM(
+            encoder.apply(init_weights),
+            rssm,
+            observation_model.apply(init_weights),
+            reward_model.apply(init_weights),
+            continue_model.apply(init_weights),
+        )
 
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
     actor: Actor | MinedojoActor = actor_cls(

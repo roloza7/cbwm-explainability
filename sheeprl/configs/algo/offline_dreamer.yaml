@@ -139,6 +139,9 @@ world_model:
       disable: False
       fullgraph: True
 
+  # CEM
+  cbm_model: False
+
   # World model optimizer
   optimizer:
     lr: 1e-4
