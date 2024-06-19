@@ -1,8 +1,8 @@
 # @package _global_
 
 defaults:
-  - override /algo: offline_dreamer
-  - override /env: atari
+  - override /algo: offline_dreamer_S
+  - override /env: mujoco
   - override /model_manager: offline_dreamer
   - _self_
 

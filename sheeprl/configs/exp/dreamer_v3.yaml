@@ -2,7 +2,7 @@
 
 defaults:
   - override /algo: dreamer_v3_S
-  - override /env: atari
+  - override /env: dmc
   - override /model_manager: dreamer_v3
   - _self_
 
