@@ -770,7 +770,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             world_optimizer=world_optimizer,
                             actor_optimizer=actor_optimizer,
                             critic_optimizer=critic_optimizer,
-                            batch=batch,
+                            data=batch,
                             aggregator=aggregator,
                             cfg=cfg,
                             is_continuous=is_continuous,
