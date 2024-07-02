@@ -95,12 +95,13 @@ def dynamic_learning(
             priors_logits[i] = prior_logits
             posteriors[i] = posterior
             posteriors_logits[i] = posterior_logits
+
+    latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
+    pred_concepts = None
     if isinstance(world_model, CBWM):
-        print("RUNNING!!!!!!!!!")
-        latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
-    else:
-        latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
-    return latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states
+        print("DYNAMIC LEARNING!!!!!!!!!")
+        latent_states, pred_concepts = world_model.cem(latent_states)
+    return latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states, pred_concepts
 
 
 def behaviour_learning(
@@ -119,10 +120,14 @@ def behaviour_learning(
     imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
     recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
     imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+    if isinstance(world_model, CBWM):
+        print("BEHAVIOR LEARNING!!!!!!!!!")
+        imagined_latent_state, _ = world_model.cem(imagined_latent_state)
+
     imagined_trajectories = torch.empty(
         horizon + 1,
         batch_size * sequence_length,
-        stoch_state_size + recurrent_state_size,
+        imagined_latent_state.size()[-1],
         device=device,
     )
     imagined_trajectories[0] = imagined_latent_state
@@ -153,6 +158,9 @@ def behaviour_learning(
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
         imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+        if isinstance(world_model, CBWM):
+            imagined_latent_state, _ = world_model.cem(imagined_latent_state)
+
         imagined_trajectories[i] = imagined_latent_state
         actions_list, _ = actor(imagined_latent_state.detach())
         actions = torch.cat(actions_list, dim=-1)
@@ -229,7 +237,7 @@ def train(
     embedded_obs = world_model.encoder(batch_obs)
 
     # Dynamic Learning
-    latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states = compiled_dynamic_learning(
+    latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states, pred_concepts = compiled_dynamic_learning(
         world_model,
         data,
         batch_actions,
@@ -241,7 +249,7 @@ def train(
         sequence_length,
         cfg.algo.world_model.decoupled_rssm,
         device,
-    )
+    )    
 
     # Compute predictions for the observations
     reconstructed_obs: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
@@ -278,6 +286,9 @@ def train(
         data["rewards"],
         priors_logits,
         posteriors_logits,
+        world_model,
+        pred_concepts,
+        cfg.algo.world_model.cbm_model.use_cbm,
         cfg.algo.world_model.kl_dynamic,
         cfg.algo.world_model.kl_representation,
         cfg.algo.world_model.kl_free_nats,

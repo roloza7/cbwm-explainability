@@ -140,7 +140,12 @@ world_model:
       fullgraph: True
 
   # CEM
-  cbm_model: False
+  cbm_model:
+    use_cbm: True
+    n_concepts: 22
+    emb_size: 16
+    concept_type: ["bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin"]
+    concept_bins: [2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]
 
   # World model optimizer
   optimizer:

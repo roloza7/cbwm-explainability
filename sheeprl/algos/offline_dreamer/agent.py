@@ -38,7 +38,6 @@ from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
-
 class CNNEncoder(nn.Module):
     """The Offline Dreamer-V3 image encoder. This is composed of 4 `nn.Conv2d` with
     kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.LayerNorm`
@@ -222,6 +221,8 @@ class CNNDecoder(nn.Module):
         )
 
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
+        # import pdb 
+        # pdb.set_trace()
         cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
         return {k: rec_obs for k, rec_obs in zip(self.keys, torch.split(cnn_out, self.output_channels, -3))}
 
@@ -618,6 +619,7 @@ class PlayerODV3(nn.Module):
         self,
         encoder: MultiEncoder | _FabricModule,
         rssm: RSSM | DecoupledRSSM,
+        cem: CEM,
         actor: Actor | MinedojoActor | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
@@ -630,6 +632,7 @@ class PlayerODV3(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.rssm = rssm
+        self.cem = cem
         self.actor = actor
         self.actions_dim = actions_dim
         self.num_envs = num_envs
@@ -686,7 +689,10 @@ class PlayerODV3(nn.Module):
         self.stochastic_state = self.stochastic_state.view(
             *self.stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
+        latent = torch.cat((self.stochastic_state, self.recurrent_state), -1)
+        if self.cem is not None:
+            latent = self.cem(latent)
+        actions, _ = self.actor(latent, greedy, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -934,6 +940,99 @@ class MinedojoActor(Actor):
         return tuple(actions), tuple(actions_dist)
 
 
+class CEM(nn.Module):
+    def __init__(self, n_concepts, concept_bins, emb_size, input_size, concept_type):
+        super().__init__()
+        self.n_concepts=n_concepts
+        self.emb_size=emb_size
+        self.input_size=input_size
+        self.concept_type=concept_type
+        self.concept_bins=concept_bins
+        self._build_model_()
+
+    def _build_model_(self):
+        self.concept_prob_generators = torch.nn.ModuleList()
+        self.concept_context_generators = torch.nn.ModuleList()
+        self.sigmoid = torch.nn.Sigmoid()
+        for c in range(self.n_concepts):
+            
+            self.concept_context_generators.append(
+                torch.nn.Sequential(*[
+                    torch.nn.Linear(self.input_size,
+                            self.concept_bins[c] * self.emb_size),
+                        ]))
+
+            self.concept_prob_generators.append(
+                torch.nn.Sequential(*[torch.nn.Linear(self.concept_bins[c]* self.emb_size,
+                        self.concept_bins[c])
+                     ]))
+
+
+        self.concept_context_generators.append(
+        torch.nn.Sequential(*[
+            torch.nn.Linear(self.input_size,self.emb_size),
+                ]))
+
+        self.g_latent=self.emb_size*(self.n_concepts+1)
+        self.g_latent+=sum(self.concept_bins)
+        # self.gen = Generator_Simple(self.g_latent,self.num_channels)
+
+
+    def forward(self,h,probs=None,return_all=False):
+        pass
+        non_concept_latent=None
+        all_concept_latent=None
+        all_concepts=None
+        all_logits=None
+        for c in range(self.n_concepts+1): 
+            ### 1 generate context
+            context= self.concept_context_generators[c](h)
+            if c <self.n_concepts :
+                ### 2 get prob given concept
+                if(probs==None):
+                    logits =  self.concept_prob_generators[c](context)
+                    prob_gumbel = F.softmax(logits)
+                else:
+                    logits=probs[c]
+                    prob_gumbel = F.softmax(logits)
+
+                # import pdb; pdb.set_trace()
+                for i in range(self.concept_bins[c]):
+                    temp_concept_latent =  context[:,:, (i*self.emb_size):((i+1)*self.emb_size)].permute(2,0,1) * prob_gumbel[:,:,i] #.unsqueeze(-1)
+                    if i==0:
+                        concept_latent = temp_concept_latent
+                    else:
+                        concept_latent = concept_latent+ temp_concept_latent
+                concept_latent = concept_latent.permute(1,2,0)
+                if all_concept_latent== None:
+                    all_concept_latent=concept_latent
+                else:
+                    all_concept_latent= torch.cat((all_concept_latent,concept_latent),-1)
+                
+                if all_concepts == None:
+                    all_concepts=prob_gumbel
+                    all_logits=logits
+                else:
+                    all_concepts=torch.cat((all_concepts,prob_gumbel),-1)
+                    all_logits=torch.cat((all_logits,logits),-1)
+
+            else:
+                if non_concept_latent== None:
+                    non_concept_latent= context
+                else:
+                    non_concept_latent= torch.cat((non_concept_latent,context),-1)
+
+        latent=torch.cat((all_concepts,all_concept_latent,non_concept_latent),-1)
+
+        # fake_data = self.gen(latent)
+        # fake_data = 0
+        # if(return_all):
+        #     return fake_data,all_logits,all_concept_latent,non_concept_latent
+        # else:
+        #     return fake_data
+        return all_concept_latent, all_logits
+
+
 class CBWM(WorldModel):
     """
     Wrapper class for the Concept Bottleneck World model.
@@ -1003,6 +1102,9 @@ def build_agent(
     recurrent_state_size = world_model_cfg.recurrent_model.recurrent_state_size
     stochastic_size = world_model_cfg.stochastic_size * world_model_cfg.discrete_size
     latent_state_size = stochastic_size + recurrent_state_size
+    # import pdb 
+    # pdb.set_trace()
+    cem_latent_state_size = world_model_cfg.cbm_model.n_concepts * world_model_cfg.cbm_model.emb_size
 
     # Define models
     cnn_stages = int(np.log2(cfg.env.screen_size) - np.log2(4))
@@ -1097,7 +1199,7 @@ def build_agent(
             keys=cfg.algo.cnn_keys.decoder,
             output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.decoder],
             channels_multiplier=world_model_cfg.observation_model.cnn_channels_multiplier,
-            latent_state_size=latent_state_size,
+            latent_state_size=cem_latent_state_size,
             cnn_encoder_output_dim=cnn_encoder.output_dim,
             image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
             activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
@@ -1112,7 +1214,7 @@ def build_agent(
         MLPDecoder(
             keys=cfg.algo.mlp_keys.decoder,
             output_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.decoder],
-            latent_state_size=latent_state_size,
+            latent_state_size=cem_latent_state_size,
             mlp_layers=world_model_cfg.observation_model.mlp_layers,
             dense_units=world_model_cfg.observation_model.dense_units,
             activation=hydra.utils.get_class(world_model_cfg.observation_model.dense_act),
@@ -1126,7 +1228,7 @@ def build_agent(
 
     reward_ln_cls = hydra.utils.get_class(world_model_cfg.reward_model.layer_norm.cls)
     reward_model = MLP(
-        input_dims=latent_state_size,
+        input_dims=cem_latent_state_size,
         output_dim=world_model_cfg.reward_model.bins,
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
         activation=hydra.utils.get_class(world_model_cfg.reward_model.dense_act),
@@ -1141,7 +1243,7 @@ def build_agent(
 
     discount_ln_cls = hydra.utils.get_class(world_model_cfg.discount_model.layer_norm.cls)
     continue_model = MLP(
-        input_dims=latent_state_size,
+        input_dims=cem_latent_state_size,
         output_dim=1,
         hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
         activation=hydra.utils.get_class(world_model_cfg.discount_model.dense_act),
@@ -1154,7 +1256,7 @@ def build_agent(
         },
     )
     # world_model_cls = hydra.utils.get_class(world_model_cfg.worldmodelcls)
-    if world_model_cfg.cbm_model is False:
+    if world_model_cfg.cbm_model.use_cbm is False:
         world_model = WorldModel(
             encoder.apply(init_weights),
             rssm,
@@ -1163,17 +1265,25 @@ def build_agent(
             continue_model.apply(init_weights),
         )
     else:
+        concept_bottleneck_model = CEM(
+            world_model_cfg.cbm_model.n_concepts,
+            world_model_cfg.cbm_model.concept_bins,
+            world_model_cfg.cbm_model.emb_size,
+            latent_state_size,
+            world_model_cfg.cbm_model.concept_type,
+        )
         world_model = CBWM(
             encoder.apply(init_weights),
             rssm,
             observation_model.apply(init_weights),
             reward_model.apply(init_weights),
             continue_model.apply(init_weights),
-        )
+            concept_bottleneck_model.apply(init_weights),
+        ) 
 
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
     actor: Actor | MinedojoActor = actor_cls(
-        latent_state_size=latent_state_size,
+        latent_state_size=cem_latent_state_size,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
         init_std=actor_cfg.init_std,
@@ -1190,7 +1300,7 @@ def build_agent(
 
     critic_ln_cls = hydra.utils.get_class(critic_cfg.layer_norm.cls)
     critic = MLP(
-        input_dims=latent_state_size,
+        input_dims=cem_latent_state_size,
         output_dim=critic_cfg.bins,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
         activation=hydra.utils.get_class(critic_cfg.dense_act),
@@ -1227,17 +1337,32 @@ def build_agent(
 
     # Create the player agent
     fabric_player = get_single_device_fabric(fabric)
-    player = PlayerODV3(
-        copy.deepcopy(world_model.encoder),
-        copy.deepcopy(world_model.rssm),
-        copy.deepcopy(actor),
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
-        discrete_size=cfg.algo.world_model.discrete_size,
-    )
+    if world_model_cfg.cbm_model.use_cbm is False:
+        player = PlayerODV3(
+            copy.deepcopy(world_model.encoder),
+            copy.deepcopy(world_model.rssm),
+            None,
+            copy.deepcopy(actor),
+            actions_dim,
+            cfg.env.num_envs,
+            cfg.algo.world_model.stochastic_size,
+            cfg.algo.world_model.recurrent_model.recurrent_state_size,
+            fabric_player.device,
+            discrete_size=cfg.algo.world_model.discrete_size,
+        )
+    else:
+        player = PlayerODV3(
+            copy.deepcopy(world_model.encoder),
+            copy.deepcopy(world_model.rssm),
+            copy.deepcopy(world_model.cem),
+            copy.deepcopy(actor),
+            actions_dim,
+            cfg.env.num_envs,
+            cfg.algo.world_model.stochastic_size,
+            cfg.algo.world_model.recurrent_model.recurrent_state_size,
+            fabric_player.device,
+            discrete_size=cfg.algo.world_model.discrete_size,
+        )
 
     # Compile world model models with torch.compile
     world_model.encoder = torch.compile(world_model.encoder, **cfg.algo.world_model.encoder.compile)

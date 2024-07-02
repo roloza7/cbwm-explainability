@@ -1,9 +1,37 @@
 from typing import Dict, Optional, Tuple
 
 import torch
+from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.distributions import Distribution, Independent, OneHotCategoricalStraightThrough
 from torch.distributions.kl import kl_divergence
+
+
+def get_concept_index(model, c):
+	if c==0:
+		start=0
+	else:
+		start=sum(model.concept_bins[:c])
+	end= sum(model.concept_bins[:c+1])
+
+	return start, end
+
+
+def get_concept_loss(model, predicted_concepts, concepts, isList=False):
+	concept_loss = 0
+	loss_ce = torch.nn.CrossEntropyLoss()
+	concept_loss_lst=[]
+	for c in range(model.n_concepts):
+		start,end = get_concept_index(model,c)
+		c_predicted_concepts=predicted_concepts[:,start:end]
+		if(not isList):
+			c_real_concepts=concepts[:,start:end]
+		else:
+			c_real_concepts=concepts[c]
+		c_concept_loss = loss_ce(c_predicted_concepts, c_real_concepts)
+		concept_loss+=c_concept_loss
+		concept_loss_lst.append(c_concept_loss)
+	return concept_loss, concept_loss_lst
 
 
 def reconstruction_loss(
@@ -13,6 +41,9 @@ def reconstruction_loss(
     rewards: Tensor,
     priors_logits: Tensor,
     posteriors_logits: Tensor,
+    world_model: _FabricModule,
+    pred_concepts: Tensor,
+    use_cbm: bool,
     kl_dynamic: float = 0.5,
     kl_representation: float = 0.1,
     kl_free_nats: float = 1.0,
@@ -77,6 +108,19 @@ def reconstruction_loss(
         continue_loss = continue_scale_factor * -pc.log_prob(continue_targets)
     else:
         continue_loss = torch.zeros_like(reward_loss)
+
+    if use_cbm is False:
+        cbm_loss = 0
+    else:
+        #TODO replace with actual concepts
+        real_concepts = (torch.rand(pred_concepts.size()) > 0.5) * 1
+        pred_concepts = pred_concepts.float()
+        real_concepts = real_concepts.float()
+        print(real_concepts)
+        print(real_concepts.size())
+        concept_loss, concept_loss_lst = get_concept_loss(world_model.cem, pred_concepts, real_concepts)
+        exit()
+        cbm_loss= concept_loss + orthognality_loss + sens_loss
     reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss).mean()
     return (
         reconstruction_loss,
