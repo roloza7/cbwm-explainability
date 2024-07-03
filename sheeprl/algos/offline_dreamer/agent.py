@@ -941,13 +941,14 @@ class MinedojoActor(Actor):
 
 
 class CEM(nn.Module):
-    def __init__(self, n_concepts, concept_bins, emb_size, input_size, concept_type):
+    def __init__(self, n_concepts, concept_bins, emb_size, input_size, concept_type, fabric):
         super().__init__()
         self.n_concepts=n_concepts
         self.emb_size=emb_size
         self.input_size=input_size
         self.concept_type=concept_type
         self.concept_bins=concept_bins
+        self.fabric = fabric
         self._build_model_()
 
     def _build_model_(self):
@@ -973,11 +974,6 @@ class CEM(nn.Module):
             torch.nn.Linear(self.input_size,self.emb_size),
                 ]))
 
-        self.g_latent=self.emb_size*(self.n_concepts+1)
-        self.g_latent+=sum(self.concept_bins)
-        # self.gen = Generator_Simple(self.g_latent,self.num_channels)
-
-
     def forward(self,h,probs=None,return_all=False):
         pass
         non_concept_latent=None
@@ -987,7 +983,7 @@ class CEM(nn.Module):
         for c in range(self.n_concepts+1): 
             ### 1 generate context
             context= self.concept_context_generators[c](h)
-            if c <self.n_concepts :
+            if c < self.n_concepts :
                 ### 2 get prob given concept
                 if(probs==None):
                     logits =  self.concept_prob_generators[c](context)
@@ -1022,15 +1018,13 @@ class CEM(nn.Module):
                 else:
                     non_concept_latent= torch.cat((non_concept_latent,context),-1)
 
-        latent=torch.cat((all_concepts,all_concept_latent,non_concept_latent),-1)
+        latent = torch.cat((all_concepts,all_concept_latent,non_concept_latent),-1)
 
-        # fake_data = self.gen(latent)
-        # fake_data = 0
-        # if(return_all):
-        #     return fake_data,all_logits,all_concept_latent,non_concept_latent
-        # else:
-        #     return fake_data
-        return all_concept_latent, all_logits
+        return latent, all_logits, all_concept_latent, non_concept_latent
+
+    def sample_latent(self, latent_shape) -> torch.Tensor:
+        latent = torch.randn(latent_shape)
+        return latent.to(self.fabric.device)
 
 
 class CBWM(WorldModel):
@@ -1104,7 +1098,8 @@ def build_agent(
     latent_state_size = stochastic_size + recurrent_state_size
     # import pdb 
     # pdb.set_trace()
-    cem_latent_state_size = world_model_cfg.cbm_model.n_concepts * world_model_cfg.cbm_model.emb_size
+    cem_latent_state_size = (world_model_cfg.cbm_model.n_concepts + 1) * world_model_cfg.cbm_model.emb_size + \
+        sum(world_model_cfg.cbm_model.concept_bins)
 
     # Define models
     cnn_stages = int(np.log2(cfg.env.screen_size) - np.log2(4))
@@ -1271,6 +1266,7 @@ def build_agent(
             world_model_cfg.cbm_model.emb_size,
             latent_state_size,
             world_model_cfg.cbm_model.concept_type,
+            fabric,
         )
         world_model = CBWM(
             encoder.apply(init_weights),

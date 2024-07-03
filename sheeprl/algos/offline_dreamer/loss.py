@@ -34,6 +34,16 @@ def get_concept_loss(model, predicted_concepts, concepts, isList=False):
 	return concept_loss, concept_loss_lst
 
 
+def OrthogonalProjectionLoss(embed1, embed2):
+    #  features are normalized
+    embed1 = torch.nn.functional.normalize(embed1, dim=1)
+    embed2 = torch.nn.functional.normalize(embed2, dim=1)
+
+    cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+    output = torch.abs(cos(embed1, embed2))
+    return output.mean()
+
+
 def reconstruction_loss(
     po: Dict[str, Distribution],
     observations: Tensor,
@@ -42,7 +52,7 @@ def reconstruction_loss(
     priors_logits: Tensor,
     posteriors_logits: Tensor,
     world_model: _FabricModule,
-    pred_concepts: Tensor,
+    cem_data: None | Tuple[Tensor, Tensor, Tensor, Tensor, Tensor],
     use_cbm: bool,
     kl_dynamic: float = 0.5,
     kl_representation: float = 0.1,
@@ -110,18 +120,20 @@ def reconstruction_loss(
         continue_loss = torch.zeros_like(reward_loss)
 
     if use_cbm is False:
-        cbm_loss = 0
+        reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss).mean()
     else:
         #TODO replace with actual concepts
+        pred_concepts, real_concept_latent, real_non_concept_latent, rand_concept_latent, rand_non_concept_latent = cem_data
         real_concepts = (torch.rand(pred_concepts.size()) > 0.5) * 1
         pred_concepts = pred_concepts.float()
         real_concepts = real_concepts.float()
-        print(real_concepts)
-        print(real_concepts.size())
-        concept_loss, concept_loss_lst = get_concept_loss(world_model.cem, pred_concepts, real_concepts)
-        exit()
-        cbm_loss= concept_loss + orthognality_loss + sens_loss
-    reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss).mean()
+        concept_loss, _ = get_concept_loss(world_model.cem, pred_concepts, real_concepts)
+        orthognality_loss = 0
+        for c in range(world_model.cem.n_concepts):
+            orthognality_loss+=(OrthogonalProjectionLoss(real_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size], real_non_concept_latent))
+            orthognality_loss+=(OrthogonalProjectionLoss(rand_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size], rand_non_concept_latent))
+        cbm_loss = concept_loss + orthognality_loss
+        reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss + cbm_loss).mean()
     return (
         reconstruction_loss,
         kl.mean(),

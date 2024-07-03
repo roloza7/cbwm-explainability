@@ -97,11 +97,14 @@ def dynamic_learning(
             posteriors_logits[i] = posterior_logits
 
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
-    pred_concepts = None
+    cem_data = None
     if isinstance(world_model, CBWM):
         print("DYNAMIC LEARNING!!!!!!!!!")
-        latent_states, pred_concepts = world_model.cem(latent_states)
-    return latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states, pred_concepts
+        random_latent = world_model.cem.sample_latent(list(latent_states.size()))
+        latent_states, pred_concepts, real_concept_latent, real_non_concept_latent = world_model.cem(latent_states)
+        _, _, rand_concept_latent, rand_non_concept_latent = world_model.cem(random_latent)
+        cem_data = [pred_concepts, real_concept_latent, real_non_concept_latent, rand_concept_latent, rand_non_concept_latent]
+    return latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states, cem_data
 
 
 def behaviour_learning(
@@ -122,7 +125,7 @@ def behaviour_learning(
     imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
     if isinstance(world_model, CBWM):
         print("BEHAVIOR LEARNING!!!!!!!!!")
-        imagined_latent_state, _ = world_model.cem(imagined_latent_state)
+        imagined_latent_state, _, _, _ = world_model.cem(imagined_latent_state)
 
     imagined_trajectories = torch.empty(
         horizon + 1,
@@ -159,7 +162,7 @@ def behaviour_learning(
         imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         if isinstance(world_model, CBWM):
-            imagined_latent_state, _ = world_model.cem(imagined_latent_state)
+            imagined_latent_state, _, _, _ = world_model.cem(imagined_latent_state)
 
         imagined_trajectories[i] = imagined_latent_state
         actions_list, _ = actor(imagined_latent_state.detach())
@@ -237,7 +240,7 @@ def train(
     embedded_obs = world_model.encoder(batch_obs)
 
     # Dynamic Learning
-    latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states, pred_concepts = compiled_dynamic_learning(
+    latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states, cem_data = compiled_dynamic_learning(
         world_model,
         data,
         batch_actions,
@@ -287,7 +290,7 @@ def train(
         priors_logits,
         posteriors_logits,
         world_model,
-        pred_concepts,
+        cem_data,
         cfg.algo.world_model.cbm_model.use_cbm,
         cfg.algo.world_model.kl_dynamic,
         cfg.algo.world_model.kl_representation,
