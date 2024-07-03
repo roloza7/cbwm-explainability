@@ -691,7 +691,7 @@ class PlayerODV3(nn.Module):
         )
         latent = torch.cat((self.stochastic_state, self.recurrent_state), -1)
         if self.cem is not None:
-            latent = self.cem(latent)
+            latent, _, _, _ = self.cem(latent)
         actions, _ = self.actor(latent, greedy, mask)
         self.actions = torch.cat(actions, -1)
         return actions
