@@ -14,6 +14,7 @@ wrapper:
   env_name: PickPlace
   env_config: single-arm-opposed
   robot: Panda
+  bddl_file: null
   controller: OSC_POSE
   hard_reset: False
   horizon: 500

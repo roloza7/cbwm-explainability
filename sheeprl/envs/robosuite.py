@@ -4,13 +4,14 @@
 #     raise ModuleNotFoundError(_IS_DMC_AVAILABLE)
 
 from typing import Any, Dict, Optional, SupportsFloat, Tuple, Union
+import os
 
 import gymnasium as gym
 import numpy as np
 import robosuite as suite
-from robosuite.wrappers import GymWrapper
 from gymnasium import spaces
-
+import libero.libero.envs.bddl_utils as BDDLUtils
+from libero.libero.envs import TASK_MAPPING  #*
 
 ## TODO It doesn't seem like this should be a wrapper, but just following DMC here
 class RobosuiteWrapper(gym.Wrapper):
@@ -19,6 +20,7 @@ class RobosuiteWrapper(gym.Wrapper):
         env_name: str,
         env_config: str,
         robot: str,
+        bddl_file = None,
         controller: Any = 'OSC_POSE',
         hard_reset: bool = False,
         horizon: int = 500,
@@ -52,6 +54,7 @@ class RobosuiteWrapper(gym.Wrapper):
         self.env_name = env_name
         self.env_config = env_config
         self.robot = robot
+        self.bddl_file = bddl_file
         self.controller = controller
         self.hard_reset = hard_reset
         self.horizon = horizon
@@ -63,8 +66,7 @@ class RobosuiteWrapper(gym.Wrapper):
         self.use_camera_obs = use_camera_obs
         self.control_freq = control_freq
 
-        robosuite_make_args=dict(
-            env_name=self.env_name,
+        libero_args=dict(
             env_configuration=self.env_config,
             robots=[self.robot],
             controller_configs=suite.controllers.load_controller_config(default_controller=self.controller),
@@ -77,6 +79,9 @@ class RobosuiteWrapper(gym.Wrapper):
             has_offscreen_renderer=self.has_offscreen_renderer,
             use_camera_obs=self.use_camera_obs,
             control_freq=self.control_freq,
+        )
+        extra_robosuite_make_args=dict(
+            env_name=self.env_name,
         )
 
 # robosuite_make_args=dict(
@@ -94,9 +99,17 @@ class RobosuiteWrapper(gym.Wrapper):
 #     use_camera_obs=False,
 #     control_freq=20,
 # )
-
-        # Create task
-        env = suite.make(**robosuite_make_args)
+        # Create task environment
+        if self.bddl_file:
+            assert os.path.exists(bddl_file)
+            problem_info = BDDLUtils.get_problem_info(bddl_file)
+            env = TASK_MAPPING[problem_info["problem_name"]](
+                bddl_file_name=bddl_file,
+                **libero_args,
+            )
+        else:
+            env = suite.make(**libero_args,
+                             **extra_robosuite_make_args)
 
         super().__init__(env)
 
