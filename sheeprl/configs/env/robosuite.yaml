@@ -1,0 +1,62 @@
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+id: ${env.wrapper.robot}_${env.wrapper.env_name}
+action_repeat: 1
+max_episode_steps: 1000
+sync_env: True
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: sheeprl.envs.robosuite.RobosuiteWrapper
+  env_name: PickPlace
+  env_config: single-arm-opposed
+  robot: Panda
+  bddl_file: null
+  controller: OSC_POSE
+  hard_reset: False
+  horizon: 500
+  reward_scale: 1.0
+  reward_shaping: True
+  ignore_done: True
+  has_renderer: False
+  has_offscreen_renderer: True
+  use_camera_obs: True
+  control_freq: 20
+
+# env_name:
+# [0] 'Door'
+# [1] 'Lift'
+# [2] 'NutAssembly'
+# [3] 'NutAssemblyRound'
+# [4] 'NutAssemblySingle'
+# [5] 'NutAssemblySquare'
+# [6] 'PickPlace'
+# [7] 'PickPlaceBread'
+# [8] 'PickPlaceCan'
+# [9] 'PickPlaceCereal'
+# [10] 'PickPlaceMilk'
+# [11] 'PickPlaceSingle'
+# [12] 'Stack'
+# [13] 'ToolHang'
+# [14] 'TwoArmHandover'
+# [15] 'TwoArmLift'
+# [16] 'TwoArmPegInHole'
+# [17] 'TwoArmTransport'
+# [18] 'Wipe'
+
+# env_config
+# [0] 'single-arm-opposed'
+# [1] 'single-arm-parallel'
+# [2] 'bimanual'
+
+# robot:
+# [0] 'Baxter'
+# [1] 'IIWA'
+# [2] 'Jaco'
+# [3] 'Kinova3'
+# [4] 'Panda'
+# [5] 'Sawyer'
+# [6] 'UR5e'
