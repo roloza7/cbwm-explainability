@@ -682,7 +682,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         rb.buffer[i]["is_first"][last_inserted_idx] = np.zeros_like(
                             rb.buffer[i]["is_first"][last_inserted_idx]
                         )
-                        step_data["is_first"][i] = np.ones_like(step_data["is_first"][i])
+                        if cfg.env.wrapper._target_ == 'sheeprl.envs.robosuite.RobosuiteWrapper':
+                            step_data["is_first"][:,i] = np.ones_like(step_data["is_first"][:,i])
+                            import pdb; pdb.set_trace()
+                        else:
+                            step_data["is_first"][i] = np.ones_like(step_data["is_first"][i])
 
             if cfg.metric.log_level > 0 and "final_info" in infos:
                 for i, agent_ep_info in enumerate(infos["final_info"]):

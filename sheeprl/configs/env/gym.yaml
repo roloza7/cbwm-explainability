@@ -10,4 +10,4 @@ mask_velocities: False
 wrapper:
   _target_: gymnasium.make
   id: ${env.id}
-  render_mode: rgb_array
+  render_mode: None
