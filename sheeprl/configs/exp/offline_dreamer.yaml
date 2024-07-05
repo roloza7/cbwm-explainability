@@ -1,9 +1,9 @@
 # @package _global_
 
 defaults:
-  - override /algo: dreamer_v3_S
-  - override /env: dmc
-  - override /model_manager: dreamer_v3
+  - override /algo: offline_dreamer_S
+  - override /env: mujoco
+  - override /model_manager: offline_dreamer
   - _self_
 
 # Algorithm

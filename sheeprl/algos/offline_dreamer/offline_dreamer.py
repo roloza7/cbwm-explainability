@@ -8,7 +8,7 @@ import copy
 import os
 import warnings
 from functools import partial
-from typing import Any, Callable, Dict, Sequence, Tuple
+from typing import Any, Callable, Dict, Sequence, Tuple, Union
 
 import gymnasium as gym
 import hydra
@@ -22,9 +22,9 @@ from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v3.agent import WorldModel, build_agent
-from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
+from sheeprl.algos.offline_dreamer.agent import WorldModel, CBWM, build_agent
+from sheeprl.algos.offline_dreamer.loss import reconstruction_loss
+from sheeprl.algos.offline_dreamer.utils import Moments, compute_lambda_values, prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.distribution import (
@@ -46,7 +46,7 @@ from sheeprl.utils.utils import Ratio, save_configs
 
 
 def dynamic_learning(
-    world_model: WorldModel,
+    world_model: Union[WorldModel, CBWM],
     data: Dict[str, Tensor],
     batch_actions: Tensor,
     embedded_obs: Dict[str, Tensor],
@@ -95,15 +95,23 @@ def dynamic_learning(
             priors_logits[i] = prior_logits
             posteriors[i] = posterior
             posteriors_logits[i] = posterior_logits
+
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
-    return latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states
+    cem_data = None
+    if isinstance(world_model, CBWM):
+        print("DYNAMIC LEARNING!!!!!!!!!")
+        random_latent = world_model.cem.sample_latent(list(latent_states.size()))
+        latent_states, pred_concepts, real_concept_latent, real_non_concept_latent = world_model.cem(latent_states)
+        _, _, rand_concept_latent, rand_non_concept_latent = world_model.cem(random_latent)
+        cem_data = [pred_concepts, real_concept_latent, real_non_concept_latent, rand_concept_latent, rand_non_concept_latent]
+    return latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states, cem_data
 
 
 def behaviour_learning(
     posteriors: torch.Tensor,
     recurrent_states: torch.Tensor,
     data: Dict[str, torch.Tensor],
-    world_model: WorldModel,
+    world_model: Union[WorldModel, CBWM],
     actor: _FabricModule,
     stoch_state_size: int,
     recurrent_state_size: int,
@@ -115,10 +123,14 @@ def behaviour_learning(
     imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
     recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
     imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+    if isinstance(world_model, CBWM):
+        print("BEHAVIOR LEARNING!!!!!!!!!")
+        imagined_latent_state, _, _, _ = world_model.cem(imagined_latent_state)
+
     imagined_trajectories = torch.empty(
         horizon + 1,
         batch_size * sequence_length,
-        stoch_state_size + recurrent_state_size,
+        imagined_latent_state.size()[-1],
         device=device,
     )
     imagined_trajectories[0] = imagined_latent_state
@@ -149,6 +161,9 @@ def behaviour_learning(
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
         imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+        if isinstance(world_model, CBWM):
+            imagined_latent_state, _, _, _ = world_model.cem(imagined_latent_state)
+
         imagined_trajectories[i] = imagined_latent_state
         actions_list, _ = actor(imagined_latent_state.detach())
         actions = torch.cat(actions_list, dim=-1)
@@ -159,7 +174,7 @@ def behaviour_learning(
 
 def train(
     fabric: Fabric,
-    world_model: WorldModel,
+    world_model: Union[WorldModel, CBWM],
     actor: _FabricModule,
     critic: _FabricModule,
     target_critic: torch.nn.Module,
@@ -225,7 +240,7 @@ def train(
     embedded_obs = world_model.encoder(batch_obs)
 
     # Dynamic Learning
-    latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states = compiled_dynamic_learning(
+    latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states, cem_data = compiled_dynamic_learning(
         world_model,
         data,
         batch_actions,
@@ -237,7 +252,7 @@ def train(
         sequence_length,
         cfg.algo.world_model.decoupled_rssm,
         device,
-    )
+    )    
 
     # Compute predictions for the observations
     reconstructed_obs: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
@@ -274,6 +289,9 @@ def train(
         data["rewards"],
         priors_logits,
         posteriors_logits,
+        world_model,
+        cem_data,
+        cfg.algo.world_model.cbm_model.use_cbm,
         cfg.algo.world_model.kl_dynamic,
         cfg.algo.world_model.kl_representation,
         cfg.algo.world_model.kl_free_nats,
@@ -627,6 +645,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     for iter_num in range(start_iter, total_iters + 1):
         policy_step += policy_steps_per_iter
 
+        ## Collect Data Phase
         with torch.inference_mode():
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
@@ -682,11 +701,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         rb.buffer[i]["is_first"][last_inserted_idx] = np.zeros_like(
                             rb.buffer[i]["is_first"][last_inserted_idx]
                         )
-                        if cfg.env.wrapper._target_ == 'sheeprl.envs.robosuite.RobosuiteWrapper':
-                            step_data["is_first"][:,i] = np.ones_like(step_data["is_first"][:,i])
-                            import pdb; pdb.set_trace()
-                        else:
-                            step_data["is_first"][i] = np.ones_like(step_data["is_first"][i])
+                        step_data["is_first"][i] = np.ones_like(step_data["is_first"][i])
 
             if cfg.metric.log_level > 0 and "final_info" in infos:
                 for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -737,11 +752,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
                 player.init_states(dones_idxes)
 
-        # Train the agent
+        ## Train the agent Phase
         if iter_num >= learning_starts:
             ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
             per_rank_gradient_steps = ratio(ratio_steps / world_size)
-            if per_rank_gradient_steps > 0:
+            if per_rank_gradient_steps > 0:  # Sample data from RB
                 local_data = rb.sample_tensors(
                     cfg.algo.per_rank_batch_size,
                     sequence_length=cfg.algo.per_rank_sequence_length,
@@ -761,28 +776,28 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                                 tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
                         batch = {k: v[i].float() for k, v in local_data.items()}
                         train(
-                            fabric,
-                            world_model,
-                            actor,
-                            critic,
-                            target_critic,
-                            world_optimizer,
-                            actor_optimizer,
-                            critic_optimizer,
-                            batch,
-                            aggregator,
-                            cfg,
-                            is_continuous,
-                            actions_dim,
-                            moments,
-                            compiled_dynamic_learning,
-                            compiled_behaviour_learning,
-                            compiled_compute_lambda_values,
+                            fabric=fabric,
+                            world_model=world_model,
+                            actor=actor,
+                            critic=critic,
+                            target_critic=target_critic,
+                            world_optimizer=world_optimizer,
+                            actor_optimizer=actor_optimizer,
+                            critic_optimizer=critic_optimizer,
+                            data=batch,
+                            aggregator=aggregator,
+                            cfg=cfg,
+                            is_continuous=is_continuous,
+                            actions_dim=actions_dim,
+                            moments=moments,
+                            compiled_dynamic_learning=compiled_dynamic_learning,
+                            compiled_behaviour_learning=compiled_behaviour_learning,
+                            compiled_compute_lambda_values=compiled_compute_lambda_values,
                         )
                         cumulative_per_rank_gradient_steps += 1
                     train_step += world_size
 
-        # Log metrics
+        ## Log metrics Phase
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
             # Sync distributed metrics
             if aggregator and not aggregator.disabled:
@@ -817,7 +832,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             last_log = policy_step
             last_train = train_step
 
-        # Checkpoint Model
+        ## Checkpoint Model Phase
         if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
             iter_num == total_iters and cfg.checkpoint.save_last
         ):

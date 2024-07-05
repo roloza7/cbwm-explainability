@@ -1,4 +1,4 @@
-# Dreamer-V3 XL configuration
+# Offline Dreamer-V3 XL configuration
 
 defaults:
   - default
@@ -7,7 +7,7 @@ defaults:
   - /optim@critic.optimizer: adam
   - _self_
 
-name: dreamer_v3
+name: offline_dreamer
 gamma: 0.996996996996997
 lmbda: 0.95
 horizon: 15
@@ -27,11 +27,11 @@ mlp_keys:
 # Model related parameters
 cnn_layer_norm:
   cls: sheeprl.models.models.LayerNormChannelLast
-  kw: 
+  kw:
     eps: 1e-3
 mlp_layer_norm:
   cls: sheeprl.models.models.LayerNorm
-  kw: 
+  kw:
     eps: 1e-3
 dense_units: 1024
 mlp_layers: 5
@@ -41,7 +41,7 @@ unimix: 0.01
 hafner_initialization: True
 
 # Compile related parameters
-compile_dynamic_learning: 
+compile_dynamic_learning:
   disable: False
   fullgraph: False
 compile_behaviour_learning:
@@ -139,6 +139,14 @@ world_model:
       disable: False
       fullgraph: True
 
+  # CEM
+  cbm_model:
+    use_cbm: True
+    n_concepts: 22
+    emb_size: 16
+    concept_type: ["bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin", "bin"]
+    concept_bins: [2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]
+
   # World model optimizer
   optimizer:
     lr: 1e-4
@@ -147,7 +155,7 @@ world_model:
 
 # Actor
 actor:
-  cls: sheeprl.algos.dreamer_v3.agent.Actor
+  cls: sheeprl.algos.offline_dreamer.agent.Actor
   ent_coef: 3e-4
   min_std: 0.1
   max_std: 1.0
@@ -160,7 +168,7 @@ actor:
   unimix: ${algo.unimix}
   action_clip: 1.0
   compile:
-    disable: False 
+    disable: False
     fullgraph: True
 
   # Disttributed percentile model (used to scale the values)
