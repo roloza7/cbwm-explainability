@@ -32,6 +32,22 @@ def get_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[Logger]:
                 )
             cfg.metric.logger.root_dir = root_dir
             cfg.metric.logger.name = cfg.run_name
+        if "wandb" in cfg.metric.logger._target_.lower():
+            root_dir = os.path.join("logs", "runs", cfg.root_dir)
+            if root_dir != cfg.metric.logger.save_dir:
+                warnings.warn(
+                    "The specified root directory for the TensorBoardLogger is different from the experiment one, "
+                    "so the logger one will be ignored and replaced with the experiment root directory",
+                    UserWarning,
+                )
+            if cfg.run_name != cfg.metric.logger.name:
+                warnings.warn(
+                    "The specified name for the TensorBoardLogger is different from the `run_name` of the experiment, "
+                    "so the logger one will be ignored and replaced with the experiment `run_name`",
+                    UserWarning,
+                )
+            cfg.metric.logger.save_dir = root_dir
+            cfg.metric.logger.name = cfg.run_name
         logger = hydra.utils.instantiate(cfg.metric.logger, _convert_="all")
     return logger
 

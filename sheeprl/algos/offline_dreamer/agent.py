@@ -221,7 +221,7 @@ class CNNDecoder(nn.Module):
         )
 
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        # import pdb 
+        # import pdb
         # pdb.set_trace()
         cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
         return {k: rec_obs for k, rec_obs in zip(self.keys, torch.split(cnn_out, self.output_channels, -3))}
@@ -423,7 +423,10 @@ class RSSM(nn.Module):
             The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
             from the recurrent state and the embbedded observation.
         """
-        action = (1 - is_first) * action
+        try:
+            action = (1 - is_first) * action
+        except:
+            import pdb; pdb.set_trace()
 
         initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
         recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
@@ -956,7 +959,7 @@ class CEM(nn.Module):
         self.concept_context_generators = torch.nn.ModuleList()
         self.sigmoid = torch.nn.Sigmoid()
         for c in range(self.n_concepts):
-            
+
             self.concept_context_generators.append(
                 torch.nn.Sequential(*[
                     torch.nn.Linear(self.input_size,
@@ -980,7 +983,7 @@ class CEM(nn.Module):
         all_concept_latent=None
         all_concepts=None
         all_logits=None
-        for c in range(self.n_concepts+1): 
+        for c in range(self.n_concepts+1):
             ### 1 generate context
             context= self.concept_context_generators[c](h)
             if c < self.n_concepts :
@@ -1004,7 +1007,7 @@ class CEM(nn.Module):
                     all_concept_latent=concept_latent
                 else:
                     all_concept_latent= torch.cat((all_concept_latent,concept_latent),-1)
-                
+
                 if all_concepts == None:
                     all_concepts=prob_gumbel
                     all_logits=logits
@@ -1096,7 +1099,7 @@ def build_agent(
     recurrent_state_size = world_model_cfg.recurrent_model.recurrent_state_size
     stochastic_size = world_model_cfg.stochastic_size * world_model_cfg.discrete_size
     latent_state_size = stochastic_size + recurrent_state_size
-    # import pdb 
+    # import pdb
     # pdb.set_trace()
     cem_latent_state_size = (world_model_cfg.cbm_model.n_concepts + 1) * world_model_cfg.cbm_model.emb_size + \
         sum(world_model_cfg.cbm_model.concept_bins)
@@ -1267,7 +1270,7 @@ def build_agent(
             latent_state_size,
             world_model_cfg.cbm_model.concept_type,
             fabric,
-        )
+        ).to(fabric.device)
         world_model = CBWM(
             encoder.apply(init_weights),
             rssm,
@@ -1275,7 +1278,8 @@ def build_agent(
             reward_model.apply(init_weights),
             continue_model.apply(init_weights),
             concept_bottleneck_model.apply(init_weights),
-        ) 
+        )
+        # import pdb; pdb.set_trace()
 
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
     actor: Actor | MinedojoActor = actor_cls(

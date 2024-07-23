@@ -8,30 +8,31 @@ from torch.distributions.kl import kl_divergence
 
 
 def get_concept_index(model, c):
-	if c==0:
-		start=0
-	else:
-		start=sum(model.concept_bins[:c])
-	end= sum(model.concept_bins[:c+1])
+    if c==0:
+        start=0
+    else:
+        start=sum(model.concept_bins[:c])
+    end= sum(model.concept_bins[:c+1])
 
-	return start, end
+    return start, end
 
 
 def get_concept_loss(model, predicted_concepts, concepts, isList=False):
-	concept_loss = 0
-	loss_ce = torch.nn.CrossEntropyLoss()
-	concept_loss_lst=[]
-	for c in range(model.n_concepts):
-		start,end = get_concept_index(model,c)
-		c_predicted_concepts=predicted_concepts[:,start:end]
-		if(not isList):
-			c_real_concepts=concepts[:,start:end]
-		else:
-			c_real_concepts=concepts[c]
-		c_concept_loss = loss_ce(c_predicted_concepts, c_real_concepts)
-		concept_loss+=c_concept_loss
-		concept_loss_lst.append(c_concept_loss)
-	return concept_loss, concept_loss_lst
+    concept_loss = 0
+    loss_ce = torch.nn.CrossEntropyLoss()
+    concept_loss_lst=[]
+    for c in range(model.n_concepts):
+        start,end = get_concept_index(model,c)
+        c_predicted_concepts=predicted_concepts[:,start:end]
+        if(not isList):
+            c_real_concepts=concepts[:,start:end]
+        else:
+            c_real_concepts=concepts[c]
+        c_real_concepts=c_real_concepts.to(c_predicted_concepts.device) # todo their might be a better way to do this
+        c_concept_loss = loss_ce(c_predicted_concepts, c_real_concepts)
+        concept_loss+=c_concept_loss
+        concept_loss_lst.append(c_concept_loss)
+    return concept_loss, concept_loss_lst
 
 
 def OrthogonalProjectionLoss(embed1, embed2):

@@ -24,6 +24,7 @@ wrapper:
   has_renderer: False
   has_offscreen_renderer: True
   use_camera_obs: True
+  use_vector_obs: False
   control_freq: 20
 
 # env_name:

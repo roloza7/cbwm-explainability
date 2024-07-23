@@ -1,0 +1,5 @@
+_target_: wandb.integration.lightning.fabric.WandbLogger
+name: ${run_name}
+save_dir: logs/runs/${root_dir}
+project: cbwm
+log_model: all

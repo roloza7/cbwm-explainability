@@ -29,7 +29,8 @@ class RobosuiteWrapper(gym.Wrapper):
         ignore_done: bool = True,
         has_renderer: bool = False,
         has_offscreen_renderer: bool = False,
-        use_camera_obs: bool = False,
+        use_camera_obs: bool = True,
+        use_vector_obs: bool = False,
         control_freq: int = 20,
         keys=None,
         channels_first = True
@@ -64,6 +65,7 @@ class RobosuiteWrapper(gym.Wrapper):
         self.has_renderer = has_renderer
         self.has_offscreen_renderer = has_offscreen_renderer
         self.use_camera_obs = use_camera_obs
+        self.use_vector_obs = use_vector_obs
         self.control_freq = control_freq
 
         libero_args=dict(
@@ -134,26 +136,27 @@ class RobosuiteWrapper(gym.Wrapper):
             if self.env.use_camera_obs:
                 keys += [f"{cam_name}_image" for cam_name in self.env.camera_names]
                 obs_shape = (3, self._height, self._width) if channels_first else (self._height, self._width, 3)
-                obs_space["rgb"] = spaces.Box(low=0, high=255, shape=obs_shape, dtype=np.uint8)
+                obs_space["agentview_rgb"] = spaces.Box(low=0, high=255, shape=obs_shape, dtype=np.uint8)
             # Iterate over all robots to add to state
-            for idx in range(len(self.env.robots)):
-                keys += ["robot{}_proprio-state".format(idx)]
-                if idx == 0:
-                    obs_space["state"] = spaces.Box(low=-1,
-                                                    high=1,
-                                                    shape=obs_spec["robot{}_proprio-state".format(idx)].shape,
-                                                    dtype=obs_spec["robot{}_proprio-state".format(idx)].dtype)  # TODO: does this need to be numpy?
-                    # _spec_to_box(self.env.observation_spec().values(), np.float64)
-                else:
-                    obs_space[f"state{idx}"] = spaces.Box(low=-1,
-                                                    high=1,
-                                                    shape=obs_spec["robot{}_proprio-state".format(idx)].shape,
-                                                    dtype=obs_spec["robot{}_proprio-state".format(idx)].dtype)  # TODO: does this need to be numpy?
+            if self.use_vector_obs:
+                for idx in range(len(self.env.robots)):
+                    keys += ["robot{}_proprio-state".format(idx)]
+                    if idx == 0:
+                        obs_space["state"] = spaces.Box(low=-1,
+                                                        high=1,
+                                                        shape=obs_spec["robot{}_proprio-state".format(idx)].shape,
+                                                        dtype=obs_spec["robot{}_proprio-state".format(idx)].dtype)  # TODO: does this need to be numpy?
+                        # _spec_to_box(self.env.observation_spec().values(), np.float64)
+                    else:
+                        obs_space[f"state{idx}"] = spaces.Box(low=-1,
+                                                        high=1,
+                                                        shape=obs_spec["robot{}_proprio-state".format(idx)].shape,
+                                                        dtype=obs_spec["robot{}_proprio-state".format(idx)].dtype)  # TODO: does this need to be numpy?
         else:
             raise NotImplementedError
         self.keys = list(set(keys))
 
-        self._from_vectors = 'robot0_proprio-state' in keys
+        self._from_vectors = use_vector_obs  # 'robot0_proprio-state' in keys
 
         # # Get reward range
         # self.reward_range = (0, self.env.reward_scale)
@@ -171,7 +174,8 @@ class RobosuiteWrapper(gym.Wrapper):
         self._observation_space = spaces.Dict(obs_space)
 
         # state space
-        self._state_space = obs_space["state"]  # Just copying the dmc implementation
+        if "state" in obs_space:
+            self._state_space = obs_space["state"]  # Just copying the dmc implementation
         self.current_state = None
         # render
         self._render_mode: str = "rgb_array"
@@ -192,7 +196,7 @@ class RobosuiteWrapper(gym.Wrapper):
             rgb_obs = obs_data['agentview_image']
             if self._channels_first:
                 rgb_obs = rgb_obs.transpose(2, 0, 1).copy()
-            obs["rgb"] = rgb_obs
+            obs["agentview_rgb"] = rgb_obs
         if self._from_vectors:
             obs["state"] = obs_data["robot{}_proprio-state".format(0)]
         return obs
