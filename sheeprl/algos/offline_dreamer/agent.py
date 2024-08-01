@@ -423,10 +423,7 @@ class RSSM(nn.Module):
             The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
             from the recurrent state and the embbedded observation.
         """
-        try:
-            action = (1 - is_first) * action
-        except:
-            import pdb; pdb.set_trace()
+        action = (1 - is_first) * action
 
         initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
         recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state

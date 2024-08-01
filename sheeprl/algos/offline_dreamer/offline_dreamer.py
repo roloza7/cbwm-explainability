@@ -99,7 +99,7 @@ def dynamic_learning(
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
     cem_data = None
     if isinstance(world_model, CBWM):
-        print("DYNAMIC LEARNING!!!!!!!!!")
+        # print("DYNAMIC LEARNING!!!!!!!!!")
         random_latent = world_model.cem.sample_latent(list(latent_states.size()))
         latent_states, pred_concepts, real_concept_latent, real_non_concept_latent = world_model.cem(latent_states)
         _, _, rand_concept_latent, rand_non_concept_latent = world_model.cem(random_latent)
@@ -124,7 +124,7 @@ def behaviour_learning(
     recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
     imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
     if isinstance(world_model, CBWM):
-        print("BEHAVIOR LEARNING!!!!!!!!!")
+        # print("BEHAVIOR LEARNING!!!!!!!!!")
         imagined_latent_state, _, _, _ = world_model.cem(imagined_latent_state)
 
     imagined_trajectories = torch.empty(
@@ -1121,6 +1121,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             shuffle=True,
             num_workers=4,
             pin_memory=True,
+            drop_last=True,
             # collate_fn=transform,
             )
 
@@ -1335,6 +1336,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         #             torch.ones_like(batch['dones'].shape[0]),
         #             torch.zeros_like(batch['dones'].shape[0])
         # for iter_num in range(start_iter, total_iters + 1):
+
+        cfg.buffer.checkpoint = False  #only when offline learning
+
         learning_starts = 64
         for epoch in range(num_epochs):
             for batch in dataloader:
@@ -1371,119 +1375,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
                 policy_step += policy_steps_per_iter
 
-                ## Collect Data Phase
-                # if not cfg.algo.offline:
-                # with torch.inference_mode():
-                #     # Measure environment interaction time: this considers both the model forward
-                #     # to get the action given the observation and the time taken into the environment
-                #     with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-                #         # Sample an action given the observation received by the environment
-                #         if (
-                #             iter_num <= learning_starts
-                #             and cfg.checkpoint.resume_from is None
-                #             and "minedojo" not in cfg.env.wrapper._target_.lower()
-                #         ):
-                #             real_actions = actions = np.array(envs.action_space.sample())
-                #             if not is_continuous:
-                #                 actions = np.concatenate(
-                #                     [
-                #                         F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                #                         for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
-                #                     ],
-                #                     axis=-1,
-                #                 )
-                #         else:
-                #             torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
-                #             mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
-                #             if len(mask) == 0:
-                #                 mask = None
-                #             # import pdb; pdb.set_trace()  # breakpoint issue to check devices on the different things
-                #             real_actions = actions = player.get_actions(torch_obs, mask=mask)
-                #             actions = torch.cat(actions, -1).cpu().numpy()
-                #             if is_continuous:
-                #                 real_actions = torch.stack(real_actions, dim=-1).cpu().numpy()
-                #             else:
-                #                 real_actions = (
-                #                     torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
-                #                 )
-
-                #         step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
-                #         rb.add(step_data, validate_args=cfg.buffer.validate_args)
-
-                #         next_obs, rewards, terminated, truncated, infos = envs.step(
-                #             real_actions.reshape(envs.action_space.shape)
-                #         )
-                #         dones = np.logical_or(terminated, truncated).astype(np.uint8)
-
-                #     step_data["is_first"] = np.zeros_like(step_data["terminated"])
-                #     if "restart_on_exception" in infos:
-                #         for i, agent_roe in enumerate(infos["restart_on_exception"]):
-                #             if agent_roe and not dones[i]:
-                #                 last_inserted_idx = (rb.buffer[i]._pos - 1) % rb.buffer[i].buffer_size
-                #                 rb.buffer[i]["terminated"][last_inserted_idx] = np.zeros_like(
-                #                     rb.buffer[i]["terminated"][last_inserted_idx]
-                #                 )
-                #                 rb.buffer[i]["truncated"][last_inserted_idx] = np.ones_like(
-                #                     rb.buffer[i]["truncated"][last_inserted_idx]
-                #                 )
-                #                 rb.buffer[i]["is_first"][last_inserted_idx] = np.zeros_like(
-                #                     rb.buffer[i]["is_first"][last_inserted_idx]
-                #                 )
-                #                 step_data["is_first"][i] = np.ones_like(step_data["is_first"][i])
-
-                #     if cfg.metric.log_level > 0 and "final_info" in infos:
-                #         for i, agent_ep_info in enumerate(infos["final_info"]):
-                #             if agent_ep_info is not None:
-                #                 ep_rew = agent_ep_info["episode"]["r"]
-                #                 ep_len = agent_ep_info["episode"]["l"]
-                #                 if aggregator and not aggregator.disabled:
-                #                     aggregator.update("Rewards/rew_avg", ep_rew)
-                #                     aggregator.update("Game/ep_len_avg", ep_len)
-                #                 fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
-
-                #     # Save the real next observation
-                #     real_next_obs = copy.deepcopy(next_obs)
-                #     if "final_observation" in infos:
-                #         for idx, final_obs in enumerate(infos["final_observation"]):
-                #             if final_obs is not None:
-                #                 for k, v in final_obs.items():
-                #                     real_next_obs[k][idx] = v
-
-                #     for k in obs_keys:
-                #         step_data[k] = next_obs[k][np.newaxis]
-
-                #     # next_obs becomes the new obs
-                #     obs = next_obs
-
-                #     rewards = rewards.reshape((1, cfg.env.num_envs, -1))
-                #     step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
-                #     step_data["truncated"] = truncated.reshape((1, cfg.env.num_envs, -1))
-                #     step_data["rewards"] = clip_rewards_fn(rewards)
-
-                #     dones_idxes = dones.nonzero()[0].tolist()
-                #     reset_envs = len(dones_idxes)
-                #     if reset_envs > 0:
-                #         reset_data = {}
-                #         for k in obs_keys:
-                #             reset_data[k] = (real_next_obs[k][dones_idxes])[np.newaxis]
-                #         reset_data["terminated"] = step_data["terminated"][:, dones_idxes]
-                #         reset_data["truncated"] = step_data["truncated"][:, dones_idxes]
-                #         reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
-                #         reset_data["rewards"] = step_data["rewards"][:, dones_idxes]
-                #         reset_data["is_first"] = np.zeros_like(reset_data["terminated"])
-                #         rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
-
-                #         # Reset already inserted step data
-                #         step_data["rewards"][:, dones_idxes] = np.zeros_like(reset_data["rewards"])
-                #         step_data["terminated"][:, dones_idxes] = np.zeros_like(step_data["terminated"][:, dones_idxes])
-                #         step_data["truncated"][:, dones_idxes] = np.zeros_like(step_data["truncated"][:, dones_idxes])
-                #         step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
-                #         player.init_states(dones_idxes)
-
-                ## Train the agent Phase
-                # batch_shapes = {key:item.shape for key, item in batch.items() if isinstance(item, torch.Tensor)}
-                # local_data_shapes = {key:item.shape for key, item in local_data.items() if isinstance(item, torch.Tensor)}
-                # if iter_num >= learning_starts:
                 ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
                 per_rank_gradient_steps = ratio(ratio_steps / world_size)
                 if per_rank_gradient_steps > 0:  # Sample data from RB
@@ -1567,9 +1458,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     last_train = train_step
 
                 ## Checkpoint Model Phase
+                # print(f"policy_step={policy_step}, last_checkpoint={last_checkpoint}, iter_num={iter_num}")
+                # print(f" checkpoint? {policy_step - last_checkpoint >= cfg.checkpoint.every}")
                 if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
                     iter_num == total_iters and cfg.checkpoint.save_last
                 ):
+                    # print("CHECKPOINT AT")
                     last_checkpoint = policy_step
                     state = {
                         "world_model": world_model.state_dict(),
