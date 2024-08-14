@@ -17,22 +17,37 @@ def get_concept_index(model, c):
     return start, end
 
 
-def get_concept_loss(model, predicted_concepts, concepts, isList=False):
+def get_concept_loss(model, predicted_concepts, target_concepts, isList=False):
+    ## TODO im not even sure this is right...it seems like from the paper that the label predictor is supposed to take 2x embeddings as input
+    ## and then predict n_concept labels. But here we predicting n_concept labels?
     concept_loss = 0
-    loss_ce = torch.nn.CrossEntropyLoss()
-    concept_loss_lst=[]
-    for c in range(model.n_concepts):
-        start,end = get_concept_index(model,c)
-        c_predicted_concepts=predicted_concepts[:,start:end]
-        if(not isList):
-            c_real_concepts=concepts[:,start:end]
-        else:
-            c_real_concepts=concepts[c]
-        c_real_concepts=c_real_concepts.to(c_predicted_concepts.device) # todo their might be a better way to do this
-        c_concept_loss = loss_ce(c_predicted_concepts, c_real_concepts)
-        concept_loss+=c_concept_loss
-        concept_loss_lst.append(c_concept_loss)
-    return concept_loss, concept_loss_lst
+    loss_bce = torch.nn.BCEWithLogitsLoss(reduction='none')
+    # loss_ce = torch.nn.CrossEntropyLoss()
+    target_concepts = target_concepts.repeat_interleave(repeats=model.concept_bins[0],dim=-1)  # To supervise the doubled concept predictions
+    # import pdb; pdb.set_trace()
+    losses = loss_bce(predicted_concepts, target_concepts)
+    loss_per_concept = losses.view(
+        losses.shape[0],
+        losses.shape[1],
+        model.n_concepts,
+        model.concept_bins[0]).mean(dim=[0,1,-1])
+    concept_loss = loss_per_concept.mean()
+    # concept_loss_lst=[]
+    # for c in range(model.n_concepts):  # Todo this is just counting by twos. inefficient?
+    #     start,end = get_concept_index(model,c)
+    #     c_predicted_concepts=predicted_concepts[:,start:end]
+    #     if(not isList):
+    #         c_real_concepts=target_concepts[:,start:end]
+    #     else:
+    #         c_real_concepts=target_concepts[c]
+    #     c_real_concepts=c_real_concepts.to(c_predicted_concepts.device) # todo their might be a better way to do this
+    #     c_concept_loss = loss_ce(c_predicted_concepts, c_real_concepts)  # Mean
+    #     concept_loss+=c_concept_loss # Sum??
+    #     concept_loss_lst.append(c_concept_loss)
+    ### TODO Why mixing mean and sum like this?
+    # return concept_loss, concept_loss_lst
+
+    return concept_loss, loss_per_concept
 
 
 def OrthogonalProjectionLoss(embed1, embed2):
@@ -120,26 +135,41 @@ def reconstruction_loss(
     else:
         continue_loss = torch.zeros_like(reward_loss)
 
+    loss_dict = {
+        'kl':kl.mean(),
+        'kl_loss':kl_loss.mean(),
+        'reward_loss':reward_loss.mean(),
+        'observation_loss':observation_loss.mean(),
+        'continue_loss':continue_loss.mean(),
+    }
     if use_cbm is False:
         reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss).mean()
     else:
         #TODO replace with actual concepts
-        pred_concepts, real_concept_latent, real_non_concept_latent, rand_concept_latent, rand_non_concept_latent = cem_data
-        real_concepts = (torch.rand(pred_concepts.size()) > 0.5) * 1
+        pred_concepts, target_concepts, real_concept_latent, real_non_concept_latent, rand_concept_latent, rand_non_concept_latent = cem_data
+        if target_concepts is None:
+            target_concepts = (torch.rand(pred_concepts.size()) > 0.5) * 1  # TODO replace with actual concepts
+            print("Randomly generated target concepts")
+        target_concepts = target_concepts.float()
         pred_concepts = pred_concepts.float()
-        real_concepts = real_concepts.float()
-        concept_loss, _ = get_concept_loss(world_model.cem, pred_concepts, real_concepts)
-        orthognality_loss = 0
-        for c in range(world_model.cem.n_concepts):
-            orthognality_loss+=(OrthogonalProjectionLoss(real_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size], real_non_concept_latent))
-            orthognality_loss+=(OrthogonalProjectionLoss(rand_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size], rand_non_concept_latent))
-        cbm_loss = concept_loss + orthognality_loss
+        concept_loss, loss_per_concept = get_concept_loss(world_model.cem, pred_concepts, target_concepts)
+        loss_dict['concept_loss'] = concept_loss.mean()
+        loss_dict['loss_per_concept'] = loss_per_concept
+        orthognality_loss = []
+        for c in range(world_model.cem.n_concepts):  #TODO why sum?
+            orthognality_loss.append(OrthogonalProjectionLoss(
+                real_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size],
+                real_non_concept_latent))
+            orthognality_loss.append(OrthogonalProjectionLoss(
+                rand_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size],
+                rand_non_concept_latent))
+        loss_dict['orthognality_loss'] = torch.stack(orthognality_loss).mean()
+        cbm_loss = concept_loss + loss_dict['orthognality_loss']
+        loss_dict['cbm_loss'] = cbm_loss.mean()
+
         reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss + cbm_loss).mean()
+
     return (
         reconstruction_loss,
-        kl.mean(),
-        kl_loss.mean(),
-        reward_loss.mean(),
-        observation_loss.mean(),
-        continue_loss.mean(),
+        loss_dict
     )

@@ -103,7 +103,16 @@ def dynamic_learning(
         random_latent = world_model.cem.sample_latent(list(latent_states.size()))
         latent_states, pred_concepts, real_concept_latent, real_non_concept_latent = world_model.cem(latent_states)
         _, _, rand_concept_latent, rand_non_concept_latent = world_model.cem(random_latent)
-        cem_data = [pred_concepts, real_concept_latent, real_non_concept_latent, rand_concept_latent, rand_non_concept_latent]
+        if data.get("targets") is not None:
+            target_concepts = data["targets"]
+        else:
+            target_concepts = None
+        cem_data = [pred_concepts,
+                    target_concepts,
+                    real_concept_latent,
+                    real_non_concept_latent,
+                    rand_concept_latent,
+                    rand_non_concept_latent]
     return latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states, cem_data
 
 
@@ -285,7 +294,7 @@ def train(
 
     # World model optimization step. Eq. 4 in the paper
     world_optimizer.zero_grad(set_to_none=True)
-    rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
+    rec_loss, loss_dict = reconstruction_loss(
         po,
         batch_obs,
         pr,
@@ -303,6 +312,11 @@ def train(
         continues_targets,
         cfg.algo.world_model.continue_scale_factor,
     )
+    kl = loss_dict['kl']
+    state_loss = loss_dict['kl_loss']
+    reward_loss = loss_dict['reward_loss']
+    observation_loss = loss_dict['observation_loss']
+    continue_loss = loss_dict['continue_loss']
     fabric.backward(rec_loss)
     world_model_grads = None
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
@@ -422,6 +436,9 @@ def train(
         aggregator.update("Loss/reward_loss", reward_loss.detach())
         aggregator.update("Loss/state_loss", state_loss.detach())
         aggregator.update("Loss/continue_loss", continue_loss.detach())
+        if cem_data:
+            print("Concept Loss: ", loss_dict['concept_loss'].detach())
+            aggregator.update("Loss/concept_loss", loss_dict['concept_loss'].detach())
         aggregator.update("State/kl", kl.mean().detach())
         aggregator.update(
             "State/post_entropy",
@@ -450,7 +467,7 @@ def train(
 
 import h5py
 import torch
-from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from torch.utils.data import Dataset, DataLoader, ConcatDataset, StackDataset
 import numpy as np
 import json
 
@@ -509,6 +526,7 @@ def load_dataset(data_path, batch_size, num_workers=4):
     return dataloader, dataset.env_args
 
 import timeit
+from pathlib import Path
 # from torchvision import transforms
 from torchvision.transforms import v2
 from libero.libero import get_libero_path
@@ -528,11 +546,59 @@ def contexttimer(name):
     print(f"[{name}] Elapsed time: {elapsed_time:.6f} seconds")
 
 
+concept_dict = {
+    'white_yellow_mug': 0,
+    'butter': 1,
+    'wine_bottle': 2,
+    'yellow_book': 3,
+    'ketchup': 4,
+    'tomato_sauce': 5,
+    'orange_juice': 6,
+    'porcelain_mug': 7,
+    'chefmate_8_frypan': 8,
+    'cream_cheese': 9,
+    'plate': 10,
+    'chocolate_pudding': 11,
+    'red_coffee_mug': 12,
+    'moka_pot': 13,
+    'basket': 14,
+    'milk': 15,
+    'white_bowl': 16,
+    'wooden_tray': 17,
+    'akita_black_bowl': 18,
+    'alphabet_soup': 19,
+    'black_book': 20,
+    'new_salad_dressing': 21
+}
+
+
+def get_bddl_concepts(file):
+    concept_list = []
+    Lines = file.readlines()
+    extract = False
+    for line in Lines:
+        line = line.strip()
+        if line == ")":
+            extract = False
+        if extract:
+            line = line.split('-')[-1].strip()
+            concept_list.append(line)
+        if line == "(:objects":
+            extract = True
+
+    arr = np.zeros(len(concept_dict.keys()))
+    concept_list = [concept_dict[c] for c in concept_list]
+    # with open('concepts.txt', 'a') as f:
+    #   for line in concept_list:
+    #       f.write(f"{line}\n")
+    arr[concept_list] = 1
+    return arr.tolist()
 
 
 def get_datasets_from_benchmark(benchmark,libero_folder,seq_len=64,obs_modality=None):
     datasets = []
     descriptions = []
+    task_concepts = []
     shape_meta = None
     # n_tasks = benchmark.n_tasks
     n_tasks = 1  ## DEBUG TODO remove
@@ -550,10 +616,52 @@ def get_datasets_from_benchmark(benchmark,libero_folder,seq_len=64,obs_modality=
             # Question: does this truncate or simply segment? if segment, how do you know if sample is end?
             # Answer: you don't, in many of these tasks it seems like they don't care, weirdly
         )
+        # if no bddl file loaded in advance
+        task_str = benchmark.get_task_demonstration(i).rstrip('_demo.hdf5') #.lstrip('libero_90\/')
+        bddl_folder = Path(get_libero_path("bddl_files"))  # TODO note this has a bug in it that pathlib is just smart enough to handle
+        sample_bddl_filepath = bddl_folder / (task_str + '.bddl')
+        with open(sample_bddl_filepath, 'r') as bddl_file:
+            concepts_i = get_bddl_concepts(bddl_file)
+        concepts_dataset_i = TargetDataset(concepts_i, seq_len, len(task_i_dataset))
+        task_concepts.append(concepts_dataset_i)
         # add language to the vision dataset, hence we call vl_dataset
         descriptions.append(benchmark.get_task(i).language)
         datasets.append(task_i_dataset)
-    return datasets, descriptions
+    return datasets, descriptions, task_concepts
+
+
+class TargetDataset(Dataset):
+    def __init__(self, target_list, sequence_length, num_samples):
+        # Repeat the target_list to match the sequence length
+        self.targets = np.tile(target_list, (sequence_length, 1))
+        self.num_samples = num_samples
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        return self.targets  # torch.tensor(self.targets, dtype=torch.float32)
+
+
+class CombinedDictDataset(Dataset):
+    def __init__(self, sequence_dataset, target_dataset):
+        self.sequence_dataset = sequence_dataset
+        self.target_dataset = target_dataset
+        assert len(sequence_dataset) == len(target_dataset), "Datasets must have the same length"
+
+    def __len__(self):
+        return len(self.sequence_dataset)
+
+    def __getitem__(self, idx):
+        sequence_item = self.sequence_dataset[idx]
+        target_item = self.target_dataset[idx]
+
+        # Assuming sequence_item is a dictionary
+        combined_item = sequence_item.copy()  # Create a copy of the original dictionary
+        combined_item['targets'] = target_item  # Add the target as a new key
+
+        return combined_item
+
 
 # Usage example:
 # data_loader, env_args = load_dataset('path/to/your/libero_dataset.hdf5', batch_size=32)
@@ -1042,7 +1150,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         ##### END COMMENT OUT
 
 
-
         libero_folder = get_libero_path("datasets")
         bddl_folder = get_libero_path("bddl_files")
         init_states_folder = get_libero_path("init_states")
@@ -1052,11 +1159,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         train_n_epochs = 25
 
         task_order = 0 # for debugging
-        benchmark_name = "libero_90" # can be from {"libero_spatial", "libero_object", "libero_goal", "libero_10"}
+        benchmark_name = "libero_90" # TODO add to config can be from {"libero_spatial", "libero_object", "libero_goal", "libero_10"}
         benchmark = get_benchmark(benchmark_name)(task_order)
         obs_modality = {'rgb': ['agentview_rgb']} #, 'low_dim': [ 'joint_states']}
 
-        datasets, descriptions = get_datasets_from_benchmark(
+        datasets, descriptions, task_concepts = get_datasets_from_benchmark(
             benchmark=benchmark,
             libero_folder=libero_folder,
             seq_len=cfg.algo.per_rank_sequence_length,
@@ -1079,6 +1186,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if cfg.checkpoint.resume_from:
             ratio.load_state_dict(state["ratio"])
 
+        if cfg.algo.offline_supervision:
+            temp_datas = []
+            for dataset, task_concept in zip(datasets, task_concepts):
+                temp_datas.append(CombinedDictDataset(dataset, task_concept))
+                # temp_datas.append(StackDataset(dataset, task_concept))
+            datasets = temp_datas
         concat_dataset = ConcatDataset(datasets)
         action_sample = concat_dataset[0]['actions']
         if isinstance(action_sample, np.ndarray):
@@ -1124,9 +1237,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             drop_last=True,
             # collate_fn=transform,
             )
-
-        # import pdb; pdb.set_trace()
-
 
         # num_epochs = 10
         # for epoch in range(num_epochs):
@@ -1399,7 +1509,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
                             # shaped_local_data = {k: v[i].float() for k, v in local_data.items()}
                             shaped_batch = {k: v[i].float() for k, v in batch.items()}
-                            # import pdb; pdb.set_trace()
                             train(
                                 fabric=fabric,
                                 world_model=world_model,

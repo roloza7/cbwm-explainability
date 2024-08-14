@@ -221,8 +221,6 @@ class CNNDecoder(nn.Module):
         )
 
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        # import pdb
-        # pdb.set_trace()
         cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
         return {k: rec_obs for k, rec_obs in zip(self.keys, torch.split(cnn_out, self.output_channels, -3))}
 
@@ -987,12 +985,11 @@ class CEM(nn.Module):
                 ### 2 get prob given concept
                 if(probs==None):
                     logits =  self.concept_prob_generators[c](context)
-                    prob_gumbel = F.softmax(logits)
+                    prob_gumbel = F.softmax(logits)  # TODO why are we using softmax here?
                 else:
                     logits=probs[c]
                     prob_gumbel = F.softmax(logits)
 
-                # import pdb; pdb.set_trace()
                 for i in range(self.concept_bins[c]):
                     temp_concept_latent =  context[:,:, (i*self.emb_size):((i+1)*self.emb_size)].permute(2,0,1) * prob_gumbel[:,:,i] #.unsqueeze(-1)
                     if i==0:
@@ -1096,8 +1093,6 @@ def build_agent(
     recurrent_state_size = world_model_cfg.recurrent_model.recurrent_state_size
     stochastic_size = world_model_cfg.stochastic_size * world_model_cfg.discrete_size
     latent_state_size = stochastic_size + recurrent_state_size
-    # import pdb
-    # pdb.set_trace()
     cem_latent_state_size = (world_model_cfg.cbm_model.n_concepts + 1) * world_model_cfg.cbm_model.emb_size + \
         sum(world_model_cfg.cbm_model.concept_bins)
 
@@ -1276,7 +1271,6 @@ def build_agent(
             continue_model.apply(init_weights),
             concept_bottleneck_model.apply(init_weights),
         )
-        # import pdb; pdb.set_trace()
 
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
     actor: Actor | MinedojoActor = actor_cls(
