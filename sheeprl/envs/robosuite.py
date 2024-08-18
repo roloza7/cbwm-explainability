@@ -21,7 +21,7 @@ class RobosuiteWrapper(gym.Wrapper):
         env_config: str,
         robot: str,
         bddl_file = None,
-        initial_joint_positions : tuple[int] | None = None,
+        initial_joint_positions : list[float] | None = None,
         controller: Any = 'OSC_POSE',
         hard_reset: bool = False,
         horizon: int = 500,
