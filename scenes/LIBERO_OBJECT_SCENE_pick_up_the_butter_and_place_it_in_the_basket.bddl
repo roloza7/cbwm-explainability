@@ -86,7 +86,7 @@
   )
 
   (:goal
-    (And (In butter_1 basket_1_contain_region))
+    (And (In butter_1 basket_1_contain_region)
   )
 
 )

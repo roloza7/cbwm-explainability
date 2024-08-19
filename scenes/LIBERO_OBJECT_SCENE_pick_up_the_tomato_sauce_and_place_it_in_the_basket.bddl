@@ -71,13 +71,13 @@
   )
 
   (:obj_of_interest
-    milk_1
+    tomato_sauce_1
     basket_1
   )
 
   (:init
-    (On milk_1 floor_target_object_region)
-    (On tomato_sauce_1 floor_other_object_region_0)
+    (On tomato_sauce_1 floor_target_object_region)
+    (On milk_1 floor_other_object_region_0)
     (On butter_1 floor_other_object_region_1)
     (On orange_juice_1 floor_other_object_region_2)
     (On chocolate_pudding_1 floor_other_object_region_3)
@@ -86,7 +86,7 @@
   )
 
   (:goal
-    (In milk_1 basket_1_contain_region)
+    (In tomato_sauce_1 basket_1_contain_region)
   )
 
 )

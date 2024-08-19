@@ -128,7 +128,7 @@
   )
 
   (:goal
-    (And (On cookies_1 plate_1))
+    (On cookies_1 plate_1)
   )
 
 )
