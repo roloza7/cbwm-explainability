@@ -27,6 +27,7 @@ AGGREGATOR_KEYS = {
     "Loss/reward_loss",
     "Loss/state_loss",
     "Loss/continue_loss",
+    "Loss/concept_loss",
     "State/kl",
     "State/post_entropy",
     "State/prior_entropy",

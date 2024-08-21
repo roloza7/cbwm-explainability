@@ -145,6 +145,30 @@ def run_algorithm(cfg: Dict[str, Any]):
             if cfg.buffer.load_from_exploration:
                 cfg.fabric.devices = exploration_cfg.fabric.devices
                 cfg.fabric.num_nodes = exploration_cfg.fabric.num_nodes
+        elif "offline" in algo_name and cfg.checkpoint.pretrain_ckpt_path:
+            # Load pretrain configurations
+            ckpt_path = pathlib.Path(cfg.checkpoint.pretrain_ckpt_path)
+            pretrain_cfg = OmegaConf.load(ckpt_path.parent.parent / "config.yaml")
+            pretrain_cfg = dotdict(OmegaConf.to_container(pretrain_cfg, resolve=True, throw_on_missing=True))
+            if pretrain_cfg.env.id != cfg.env.id:
+                raise ValueError(
+                    "This experiment is run with a different environment from "
+                    "the one of the pretrain you want to finetune. "
+                    f"Got '{cfg.env.id}', but the environment used during pretrain was {pretrain_cfg.env.id}. "
+                    "Set properly the environment for finetuning the experiment."
+                )
+            kwargs["pretrain_cfg"] = pretrain_cfg
+            # Take environment configs from pretrain
+            cfg.env.frame_stack = pretrain_cfg.env.frame_stack
+            cfg.env.screen_size = pretrain_cfg.env.screen_size
+            cfg.env.action_repeat = pretrain_cfg.env.action_repeat
+            cfg.env.grayscale = pretrain_cfg.env.grayscale
+            cfg.env.clip_rewards = pretrain_cfg.env.clip_rewards
+            cfg.env.frame_stack_dilation = pretrain_cfg.env.frame_stack_dilation
+            cfg.env.max_episode_steps = pretrain_cfg.env.max_episode_steps
+            cfg.env.reward_as_observation = pretrain_cfg.env.reward_as_observation
+            _env_target = cfg.env.wrapper._target_.lower()
+
         fabric: Fabric = hydra.utils.instantiate(cfg.fabric, strategy=strategy, _convert_="all")
 
     if hasattr(cfg, "metric") and cfg.metric is not None:

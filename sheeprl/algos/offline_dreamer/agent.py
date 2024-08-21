@@ -985,10 +985,10 @@ class CEM(nn.Module):
                 ### 2 get prob given concept
                 if(probs==None):
                     logits =  self.concept_prob_generators[c](context)
-                    prob_gumbel = F.softmax(logits)  # TODO why are we using softmax here?
+                    prob_gumbel = F.softmax(logits, dim=-1)  # TODO why are we using softmax here?
                 else:
                     logits=probs[c]
-                    prob_gumbel = F.softmax(logits)
+                    prob_gumbel = F.softmax(logits, dim=-1)
 
                 for i in range(self.concept_bins[c]):
                     temp_concept_latent =  context[:,:, (i*self.emb_size):((i+1)*self.emb_size)].permute(2,0,1) * prob_gumbel[:,:,i] #.unsqueeze(-1)
@@ -1005,19 +1005,20 @@ class CEM(nn.Module):
                 if all_concepts == None:
                     all_concepts=prob_gumbel
                     all_logits=logits
+                    expanded_logits = logits.unsqueeze(-2)
                 else:
-                    all_concepts=torch.cat((all_concepts,prob_gumbel),-1)
+                    all_concepts=torch.cat((all_concepts,prob_gumbel),-1)  # List of probabilities
                     all_logits=torch.cat((all_logits,logits),-1)
+                    expanded_logits = torch.cat((expanded_logits,logits.unsqueeze(-2)),-2)
 
-            else:
+            else:  # non-concept latent ==  residual
                 if non_concept_latent== None:
                     non_concept_latent= context
                 else:
                     non_concept_latent= torch.cat((non_concept_latent,context),-1)
 
         latent = torch.cat((all_concepts,all_concept_latent,non_concept_latent),-1)
-
-        return latent, all_logits, all_concept_latent, non_concept_latent
+        return latent, expanded_logits, all_concept_latent, non_concept_latent
 
     def sample_latent(self, latent_shape) -> torch.Tensor:
         latent = torch.randn(latent_shape)

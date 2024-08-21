@@ -18,35 +18,28 @@ def get_concept_index(model, c):
 
 
 def get_concept_loss(model, predicted_concepts, target_concepts, isList=False):
-    ## TODO im not even sure this is right...it seems like from the paper that the label predictor is supposed to take 2x embeddings as input
-    ## and then predict n_concept labels. But here we predicting n_concept labels?
+    ## TODO im not even sure this is right...it seems like from the paper that the
+    ## label predictor is supposed to take 2x embeddings as input and then predict
+    ## n_concept labels. But here we predicting n_concept labels?
     concept_loss = 0
-    loss_bce = torch.nn.BCEWithLogitsLoss(reduction='none')
-    # loss_ce = torch.nn.CrossEntropyLoss()
-    target_concepts = target_concepts.repeat_interleave(repeats=model.concept_bins[0],dim=-1)  # To supervise the doubled concept predictions
+    predicted_concepts = predicted_concepts.float()
+    if target_concepts is None:
+        target_concepts = (torch.rand(predicted_concepts.size()) > 0.5) * 1  # TODO replace with actual concepts
+        target_concepts = target_concepts.to(predicted_concepts.device)
+        print("Randomly generated target concepts")
+    else:
+        target_concepts = target_concepts.unsqueeze(-1)
+        target_concepts = torch.cat((target_concepts,1-target_concepts),-1)   # To supervise the doubled concept predictions
+        # target_concepts.repeat_interleave(repeats=model.concept_bins[0],dim=-1)   # To supervise the doubled concept predictions
+    target_concepts = target_concepts.float()
+    pred_perm = predicted_concepts.permute(1,3,0,2)
+    tar_perm = target_concepts.permute(1,3,0,2)
     # import pdb; pdb.set_trace()
-    losses = loss_bce(predicted_concepts, target_concepts)
-    loss_per_concept = losses.view(
-        losses.shape[0],
-        losses.shape[1],
-        model.n_concepts,
-        model.concept_bins[0]).mean(dim=[0,1,-1])
+    # loss_bce = torch.nn.BCEWithLogitsLoss(reduction='none')
+    loss_ce = torch.nn.CrossEntropyLoss(reduction='none')
+    losses = loss_ce(pred_perm, tar_perm)
+    loss_per_concept = losses.mean(dim=[0,1])
     concept_loss = loss_per_concept.mean()
-    # concept_loss_lst=[]
-    # for c in range(model.n_concepts):  # Todo this is just counting by twos. inefficient?
-    #     start,end = get_concept_index(model,c)
-    #     c_predicted_concepts=predicted_concepts[:,start:end]
-    #     if(not isList):
-    #         c_real_concepts=target_concepts[:,start:end]
-    #     else:
-    #         c_real_concepts=target_concepts[c]
-    #     c_real_concepts=c_real_concepts.to(c_predicted_concepts.device) # todo their might be a better way to do this
-    #     c_concept_loss = loss_ce(c_predicted_concepts, c_real_concepts)  # Mean
-    #     concept_loss+=c_concept_loss # Sum??
-    #     concept_loss_lst.append(c_concept_loss)
-    ### TODO Why mixing mean and sum like this?
-    # return concept_loss, concept_loss_lst
-
     return concept_loss, loss_per_concept
 
 
@@ -147,11 +140,6 @@ def reconstruction_loss(
     else:
         #TODO replace with actual concepts
         pred_concepts, target_concepts, real_concept_latent, real_non_concept_latent, rand_concept_latent, rand_non_concept_latent = cem_data
-        if target_concepts is None:
-            target_concepts = (torch.rand(pred_concepts.size()) > 0.5) * 1  # TODO replace with actual concepts
-            print("Randomly generated target concepts")
-        target_concepts = target_concepts.float()
-        pred_concepts = pred_concepts.float()
         concept_loss, loss_per_concept = get_concept_loss(world_model.cem, pred_concepts, target_concepts)
         loss_dict['concept_loss'] = concept_loss.mean()
         loss_dict['loss_per_concept'] = loss_per_concept

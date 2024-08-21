@@ -9,6 +9,7 @@ import os
 import warnings
 from functools import partial
 from typing import Any, Callable, Dict, Sequence, Tuple, Union
+import pathlib
 
 import gymnasium as gym
 import hydra
@@ -109,7 +110,7 @@ def dynamic_learning(
             target_concepts = None
         cem_data = [pred_concepts,
                     target_concepts,
-                    real_concept_latent,
+                    real_concept_latent,  # This is the stuff we are comparing
                     real_non_concept_latent,
                     rand_concept_latent,
                     rand_non_concept_latent]
@@ -437,7 +438,6 @@ def train(
         aggregator.update("Loss/state_loss", state_loss.detach())
         aggregator.update("Loss/continue_loss", continue_loss.detach())
         if cem_data:
-            print("Concept Loss: ", loss_dict['concept_loss'].detach())
             aggregator.update("Loss/concept_loss", loss_dict['concept_loss'].detach())
         aggregator.update("State/kl", kl.mean().detach())
         aggregator.update(
@@ -601,7 +601,7 @@ def get_datasets_from_benchmark(benchmark,libero_folder,seq_len=64,obs_modality=
     task_concepts = []
     shape_meta = None
     # n_tasks = benchmark.n_tasks
-    n_tasks = 1  ## DEBUG TODO remove
+    n_tasks = benchmark.n_tasks
     seq_len = 64
     if obs_modality is None:
         obs_modality = {'rgb': ['agentview_rgb', 'eye_in_hand_rgb'], 'depth': [], 'low_dim': ['gripper_states', 'joint_states']}
@@ -617,7 +617,7 @@ def get_datasets_from_benchmark(benchmark,libero_folder,seq_len=64,obs_modality=
             # Answer: you don't, in many of these tasks it seems like they don't care, weirdly
         )
         # if no bddl file loaded in advance
-        task_str = benchmark.get_task_demonstration(i).rstrip('_demo.hdf5') #.lstrip('libero_90\/')
+        task_str = benchmark.get_task_demonstration(i)[:-len('_demo.hdf5')]
         bddl_folder = Path(get_libero_path("bddl_files"))  # TODO note this has a bug in it that pathlib is just smart enough to handle
         sample_bddl_filepath = bddl_folder / (task_str + '.bddl')
         with open(sample_bddl_filepath, 'r') as bddl_file:
@@ -706,13 +706,36 @@ class RestructureAndResizeTransform:
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = None) -> None:
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
 
-    if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from)
+    ## Loading
+    if cfg.checkpoint.pretrain_ckpt_path is not None:   # Load Pretrained model for finetuning
+        fabric.print(f"Starting from pretrained model at : {cfg.checkpoint.pretrain_ckpt_path}")
+        state = fabric.load(pathlib.Path(cfg.checkpoint.pretrain_ckpt_path))
+        # All the models must be equal to the ones of the exploration phase
+        cfg.algo.lmbda = pretrain_cfg.algo.lmbda
+        cfg.algo.horizon = pretrain_cfg.algo.horizon
+        cfg.algo.layer_norm = pretrain_cfg.algo.layer_norm
+        cfg.algo.dense_units = pretrain_cfg.algo.dense_units
+        cfg.algo.mlp_layers = pretrain_cfg.algo.mlp_layers
+        cfg.algo.dense_act = pretrain_cfg.algo.dense_act
+        cfg.algo.cnn_act = pretrain_cfg.algo.cnn_act
+        cfg.algo.unimix = pretrain_cfg.algo.unimix
+        cfg.algo.hafner_initialization = pretrain_cfg.algo.hafner_initialization
+        cfg.algo.world_model = pretrain_cfg.algo.world_model
+        cfg.algo.actor = pretrain_cfg.algo.actor
+        cfg.algo.critic = pretrain_cfg.algo.critic
+        cfg.algo.cnn_keys = pretrain_cfg.algo.cnn_keys
+        cfg.algo.mlp_keys = pretrain_cfg.algo.mlp_keys
+    elif cfg.checkpoint.resume_from is not None:  # Finetuning that was interrupted for some reason
+        fabric.print(f"Resuming training on: {cfg.checkpoint.resume_from}")
+        state = fabric.load(pathlib.Path(cfg.checkpoint.resume_from))
+    else:
+        pass
+
 
     # These arguments cannot be changed
     cfg.env.frame_stack = -1
@@ -842,7 +865,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
             buffer_cls=SequentialReplayBuffer,
         )
-        if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
+        if cfg.checkpoint.resume_from and cfg.buffer.checkpoint or (cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint):
             if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
                 rb = state["rb"][fabric.global_rank]
             elif isinstance(state["rb"], EnvIndependentReplayBuffer):
@@ -1158,7 +1181,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         train_n_epochs = 25
 
-        task_order = 0 # for debugging
+        task_order = 0  # Default task order
         benchmark_name = "libero_90" # TODO add to config can be from {"libero_spatial", "libero_object", "libero_goal", "libero_10"}
         benchmark = get_benchmark(benchmark_name)(task_order)
         obs_modality = {'rgb': ['agentview_rgb']} #, 'low_dim': [ 'joint_states']}
@@ -1237,38 +1260,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             drop_last=True,
             # collate_fn=transform,
             )
-
-        # num_epochs = 10
-        # for epoch in range(num_epochs):
-        #     for batch in dataloader:
-        #         train(
-        #             fabric=fabric,
-        #             world_model=world_model,
-        #             actor=actor,
-        #             critic=critic,
-        #             target_critic=target_critic,
-        #             world_optimizer=world_optimizer,
-        #             actor_optimizer=actor_optimizer,
-        #             critic_optimizer=critic_optimizer,
-        #             data=batch,
-        #             aggregator=aggregator,
-        #             cfg=cfg,
-        #             is_continuous=is_continuous,
-        #             actions_dim=actions_dim,
-        #             moments=moments,
-        #             compiled_dynamic_learning=compiled_dynamic_learning,
-        #             compiled_behaviour_learning=compiled_behaviour_learning,
-        #             compiled_compute_lambda_values=compiled_compute_lambda_values,
-        #         )
-
-        #         # obs, action, reward, done, next_obs = batch
-        #         # losses = agent.update(obs, action, reward, done, next_obs)
-        #         # epoch_losses.append(losses)
-
-        # # Log average losses for the epoch
-        # avg_losses = {k: sum(loss[k] for loss in epoch_losses) / len(epoch_losses)
-        #               for k in epoch_losses[0].keys()}
-        # print(f"Epoch {epoch}: Losses = {avg_losses}")
 
 
         action_space = envs.single_action_space
@@ -1370,6 +1361,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
             buffer_cls=SequentialReplayBuffer,
         )
+
         if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
             if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
                 rb = state["rb"][fabric.global_rank]
@@ -1430,7 +1422,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         cumulative_per_rank_gradient_steps = 0
         iter_num = start_iter
-        num_epochs = 25
+        num_epochs = 100
 
         init_batch = next(iter(dataloader))
 
@@ -1451,7 +1443,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         learning_starts = 64
         for epoch in range(num_epochs):
+            print(f"Epoch {epoch}")
             for batch in dataloader:
+                print(f"iter_num={iter_num}")
                 ## Transforms to make it match env. This feels like I should be able to do it in the dataloader:
                 batch['truncated'] = batch['dones']
                 batch['terminated'] = batch['dones']
@@ -1532,7 +1526,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         train_step += world_size
 
                 ## Log metrics Phase
+                # import pdb; pdb.set_trace()
                 if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
+                    print(f"policy_step={policy_step}, last_log={last_log}")
                     # Sync distributed metrics
                     if aggregator and not aggregator.disabled:
                         metrics_dict = aggregator.compute()
@@ -1572,7 +1568,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
                     iter_num == total_iters and cfg.checkpoint.save_last
                 ):
-                    # print("CHECKPOINT AT")
+                    print(f"checkpoint at policy_step={policy_step}")
                     last_checkpoint = policy_step
                     state = {
                         "world_model": world_model.state_dict(),
@@ -1597,12 +1593,15 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         state=state,
                         replay_buffer=rb if cfg.buffer.checkpoint else None,
                     )
+                    # print(f"iter_num={iter_num}")
                 iter_num += 1  # 1 for num_updates, update_samples = cfg.algo.per_rank_batch_size * fabric.world_size
+
                 if iter_num > total_iters:
+                    # import pdb; pdb.set_trace()
                     break
-            else:
+            else:  # Continue if the inner loop wasn't broken
                 continue
-            break
+            # break
 
     if fabric.is_global_zero and cfg.algo.run_test:
         test(player, fabric, cfg, log_dir, greedy=False)
