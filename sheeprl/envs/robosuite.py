@@ -417,8 +417,9 @@ class RobosuiteWrapper(gym.Wrapper):
         r_hover = 0.0
         r_hover = ((1 - target_to_goal_dist)**2 + hover_slope_mult * (1 - target_to_goal_dist)) * 0.5 * hover_mult
         
-        print("distance_to_goal: {}".format(target_to_goal_dist))
-        print("r_reach: {}, r_grasp: {}, r_lift: {}, r_hover: {}".format(r_reach, r_grasp, r_lift, r_hover))
+        # Uncomment if you need this at some point        
+        # print("distance_to_goal: {}".format(target_to_goal_dist))
+        # print("r_reach: {}, r_grasp: {}, r_lift: {}, r_hover: {}".format(r_reach, r_grasp, r_lift, r_hover))
 
                 
         return r_reach + r_grasp + r_lift + r_hover
