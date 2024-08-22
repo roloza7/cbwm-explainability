@@ -319,6 +319,10 @@ class RobosuiteWrapper(gym.Wrapper):
             
         self.__update_initial_distances()
 
+        # Reset staged rewards accumulator
+        if self.reward_shaping and self.bddl_file:
+            self.max_lift_ep = 0
+
         self.current_state = orig_obs
         # self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(orig_obs)
@@ -369,6 +373,8 @@ class RobosuiteWrapper(gym.Wrapper):
             'body_geom_id': env.sim.model.body_name2id(goal_object.root_body)
         }
         
+        self.max_lift_ep = 0
+        
     def staged_rewards(self):
         """
         Function to calculate staged rewards
@@ -378,11 +384,10 @@ class RobosuiteWrapper(gym.Wrapper):
         # The suite.make environment implements its own staged rewards
         assert self.bddl_file
         
-        reach_mult = 0.1
+        reach_mult = 0.2
         # Grasp multiplier set to zero (reference sets it to 0.35) but implemented for completeness
         grasp_mult = hover_mult = 0.2
         lift_mult = np.pi / 32
-        hover_slope_mult = 4
         
         r_reach = 0
         # Normalized, > 1 if farther than initial position, [0, 1] if closer
@@ -395,10 +400,10 @@ class RobosuiteWrapper(gym.Wrapper):
         
         # Grasping reward
         # Grows as independent approaches zero
-        # (1 - tanh(3x)) * 0.1
-        r_reach = (1 - np.tanh(3.0 * eef_to_target_dist)) * reach_mult
-        # Contrain to [0, reach_mult]
-        r_reach = max(0, min(r_reach, reach_mult))
+        r_reach = ((1 - eef_to_target_dist) ** 2) * reach_mult
+        # Constrain to [0, reach_mult]
+        # If statement to prevent reward from increasing if dist > 1
+        r_reach = max(0, min(r_reach, reach_mult)) if eef_to_target_dist <= 1 else 0
         
         is_grasping = self.env._check_grasp(
                     gripper=self.env.robots[0].gripper,
@@ -413,12 +418,12 @@ class RobosuiteWrapper(gym.Wrapper):
         # Grasping reward
         r_grasp = 0.0
         if is_grasping:
-            # (- (1 - x)**2 + 1) * 0.5 * grasp_mult
             # x : distance to goal
             # grasping reward decreases as one gets closer to the goal
-            r_grasp += (- (1 - target_to_goal_dist) ** 2 + 1) * 0.5 * grasp_mult
+            r_grasp += (- (1 - target_to_goal_dist) ** 2 + 1) * grasp_mult
         # Constrain to [0, 0.5 * grasp_mult]
-        r_grasp = max(0, min(r_grasp, grasp_mult * 0.5))
+        # If statement prevents reward from decreasing if target_to_goal > 1
+        r_grasp = max(0, min(r_grasp, grasp_mult)) if target_to_goal_dist <= 1 else grasp_mult
         
         r_lift = 0.0
         
@@ -429,21 +434,23 @@ class RobosuiteWrapper(gym.Wrapper):
         # z : distance lifted
         r_lift = np.tanh(4 * distance_lifted) * lift_mult
         # Penalty is applied as object gets closer to goal
-        # p(x) = tanh(8x)
+        # p(x) = tanh(20x)
         # Goes to zero as x -> 0
-        lift_penalty = np.tanh(8 * target_to_goal_dist)
-        r_lift = r_lift * lift_penalty    
+        lift_penalty = np.tanh(20 * target_to_goal_dist)
+        r_lift = r_lift * lift_penalty
         
         # Constrain to [0, pi/32]
         r_lift = max(0, min(r_lift, lift_mult))    
-                
-        # Hover reward
-        # h(x) = ((1 - x)**2 + slope_mult * (1 - x)) * 0.5 * hover_mult
-        r_hover = 0.0
-        r_hover = ((1 - target_to_goal_dist)**2 + hover_slope_mult * (1 - target_to_goal_dist)) * 0.5 * hover_mult
         
-        # Constrain to [0, (1 + slope_multiplier) * 0.5 * hover_mult]
-        r_hover = max(0, min(r_hover, (1 + hover_slope_mult) * 0.5 * hover_mult))
+        self.max_lift_ep = max(self.max_lift_ep, r_lift)
+        
+        r_hover = 0.0
+        if self.max_lift_ep > 0.03:
+            # Hover reward
+            r_hover = ((1.25 - 1.25  * target_to_goal_dist)**2) * hover_mult
+            
+            # If prevents reward from increasing if target_to_goal > 1
+            r_hover = max(0, min(r_hover, 1.5625 * hover_mult)) if target_to_goal_dist <= 1 else 0
         
         # Uncomment if you need this at some point        
         # print("distance_to_goal: {}".format(target_to_goal_dist))
