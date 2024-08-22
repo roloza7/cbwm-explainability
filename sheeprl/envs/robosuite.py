@@ -379,6 +379,8 @@ class RobosuiteWrapper(gym.Wrapper):
         # Grows as independent approaches zero
         # (1 - tanh(3x)) * 0.1
         r_reach = (1 - np.tanh(3.0 * eef_to_target_dist)) * reach_mult
+        # Contrain to [0, reach_mult]
+        r_reach = max(0, min(r_reach, reach_mult))
         
         is_grasping = self.env._check_grasp(
                     gripper=self.env.robots[0].gripper,
@@ -397,6 +399,8 @@ class RobosuiteWrapper(gym.Wrapper):
             # x : distance to goal
             # grasping reward decreases as one gets closer to the goal
             r_grasp += (- (1 - target_to_goal_dist) ** 2 + 1) * 0.5 * grasp_mult
+        # Constrain to [0, 0.5 * grasp_mult]
+        r_grasp = max(0, min(r_grasp, grasp_mult * 0.5))
         
         r_lift = 0.0
         
@@ -410,12 +414,18 @@ class RobosuiteWrapper(gym.Wrapper):
         # p(x) = tanh(8x)
         # Goes to zero as x -> 0
         lift_penalty = np.tanh(8 * target_to_goal_dist)
-        r_lift = r_lift * lift_penalty        
+        r_lift = r_lift * lift_penalty    
+        
+        # Constrain to [0, pi/32]
+        r_lift = max(0, min(r_lift, lift_mult))    
                 
         # Hover reward
         # h(x) = ((1 - x)**2 + slope_mult * (1 - x)) * 0.5 * hover_mult
         r_hover = 0.0
         r_hover = ((1 - target_to_goal_dist)**2 + hover_slope_mult * (1 - target_to_goal_dist)) * 0.5 * hover_mult
+        
+        # Constrain to [0, (1 + slope_multiplier) * 0.5 * hover_mult]
+        r_hover = max(0, min(r_hover, (1 + hover_slope_mult) * 0.5 * hover_mult))
         
         # Uncomment if you need this at some point        
         # print("distance_to_goal: {}".format(target_to_goal_dist))
