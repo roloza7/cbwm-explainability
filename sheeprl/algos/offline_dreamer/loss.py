@@ -34,7 +34,6 @@ def get_concept_loss(model, predicted_concepts, target_concepts, isList=False):
     target_concepts = target_concepts.float()
     pred_perm = predicted_concepts.permute(1,3,0,2)
     tar_perm = target_concepts.permute(1,3,0,2)
-    # import pdb; pdb.set_trace()
     # loss_bce = torch.nn.BCEWithLogitsLoss(reduction='none')
     loss_ce = torch.nn.CrossEntropyLoss(reduction='none')
     losses = loss_ce(pred_perm, tar_perm)
@@ -70,6 +69,8 @@ def reconstruction_loss(
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
     continue_scale_factor: float = 1.0,
+    ortho_reg: float = 0.1,
+    concept_reg: float = 0.1,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     Compute the reconstruction loss as described in Eq. 5 in
@@ -98,6 +99,10 @@ def reconstruction_loss(
             Default to None.
         continue_scale_factor (float): the scale factor for the continue loss.
             Default to 10.
+        ortho_reg (float): scale factor of the CEM orthonal loss.
+            Default to 0.1.
+        concept_reg (float): scale factor of the CEM concept loss.
+            Default to 0.1.
 
     Returns:
         observation_loss (Tensor): the value of the observation loss.
@@ -152,7 +157,8 @@ def reconstruction_loss(
                 rand_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size],
                 rand_non_concept_latent))
         loss_dict['orthognality_loss'] = torch.stack(orthognality_loss).mean()
-        cbm_loss = concept_loss + loss_dict['orthognality_loss']
+
+        cbm_loss = concept_reg * concept_loss + ortho_reg * loss_dict['orthognality_loss']
         loss_dict['cbm_loss'] = cbm_loss.mean()
 
         reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss + cbm_loss).mean()

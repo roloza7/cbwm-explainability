@@ -1,5 +1,9 @@
 _target_: wandb.integration.lightning.fabric.WandbLogger
+# run_name: ${now:%Y-%m-%d_%H-%M-%S}_${algo.name}_${env.id}
+tags: null
 name: ${run_name}
-save_dir: logs/runs/${root_dir}
+save_dir: logs/runs/${root_dir}/${now:%Y-%m-%d_%H-%M-%S}_${algo.name}_${env.id}_${seed}
 project: cbwm
-log_model: all
+log_model: null  #all
+version: null
+prefix: ""

@@ -12,6 +12,10 @@ import robosuite as suite
 from gymnasium import spaces
 import libero.libero.envs.bddl_utils as BDDLUtils
 from libero.libero.envs import TASK_MAPPING  #*
+import time
+import pdb
+
+
 
 ## TODO It doesn't seem like this should be a wrapper, but just following DMC here
 class RobosuiteWrapper(gym.Wrapper):
@@ -20,7 +24,7 @@ class RobosuiteWrapper(gym.Wrapper):
         env_name: str,
         env_config: str,
         robot: str,
-        bddl_file = None,
+        bddl_file: str = None,
         controller: Any = 'OSC_POSE',
         hard_reset: bool = False,
         horizon: int = 500,
@@ -109,6 +113,7 @@ class RobosuiteWrapper(gym.Wrapper):
                 bddl_file_name=bddl_file,
                 **libero_args,
             )
+            self.concepts = np.array(get_bddl_concepts(self.bddl_file))
         else:
             env = suite.make(**libero_args,
                              **extra_robosuite_make_args)
@@ -183,7 +188,10 @@ class RobosuiteWrapper(gym.Wrapper):
         self._metadata = {}
         # self._metadata = {"render_fps": 30}
         # set seed
-        self.seed = 10
+        self.seed = 10  #TODO this should come from the config
+
+        self.ep_returns = []
+        self.ep_length = 0
 
 
     def __getattr__(self, name):
@@ -270,6 +278,33 @@ class RobosuiteWrapper(gym.Wrapper):
         infos = time_step[3]
         infos["discount"] = .997  # TODO: I don't know if thats correct
         infos["internal_state"] = time_step[0]
+        infos["concepts"] = self.concepts
+
+        self.ep_returns.append(reward)
+        self.ep_lengths += 1
+        dones = np.logical_or(terminated, truncated)
+        num_dones = np.sum(dones)
+        if num_dones:
+            pdb.set_trace()
+            if "ep" in infos or "_ep" in infos:
+                raise ValueError(
+                    "Attempted to add episode stats when they already exist"
+                )
+            else:
+                pdb.set_trace()
+                infos["ep"] = {
+                    "r": np.where(dones, self.ep_returns, 0.0),
+                    "l": np.where(dones, self.ep_lengths, 0),
+                    "t": np.where(
+                        dones,
+                        np.round(time.perf_counter() - self.ep_start_times, 6),
+                        0.0,
+                    ),
+                }
+                if self.is_vector_env:
+                    infos["_ep"] = np.where(dones, True, False)
+
+
         return obs, reward, terminated, truncated, infos
 
     def reset(
@@ -278,6 +313,10 @@ class RobosuiteWrapper(gym.Wrapper):
         if not isinstance(seed, np.random.RandomState):
             seed = np.random.RandomState(seed)
         # self.env.task._random = seed
+        self.ep_start_times = time.perf_counter()
+        self.ep_returns = []  # np.zeros(self.num_envs, dtype=np.float32)
+        self.ep_lengths = 0
+
         orig_obs = self.env.reset()
         self.current_state = orig_obs
         # self.current_state = _flatten_obs(time_step.observation)
@@ -303,3 +342,55 @@ class RobosuiteWrapper(gym.Wrapper):
     def render(self): # -> RenderFrame | list[RenderFrame] | None:
         # self.sim._render_context_offscreen
         return self.env._get_observations()['agentview_image']
+
+
+
+concept_dict = {
+    'white_yellow_mug': 0,
+    'butter': 1,
+    'wine_bottle': 2,
+    'yellow_book': 3,
+    'ketchup': 4,
+    'tomato_sauce': 5,
+    'orange_juice': 6,
+    'porcelain_mug': 7,
+    'chefmate_8_frypan': 8,
+    'cream_cheese': 9,
+    'plate': 10,
+    'chocolate_pudding': 11,
+    'red_coffee_mug': 12,
+    'moka_pot': 13,
+    'basket': 14,
+    'milk': 15,
+    'white_bowl': 16,
+    'wooden_tray': 17,
+    'akita_black_bowl': 18,
+    'alphabet_soup': 19,
+    'black_book': 20,
+    'new_salad_dressing': 21,
+    'bbq_sauce': 22,
+}
+
+
+def get_bddl_concepts(file_name):
+    concept_list = []
+    with open(file_name, 'r') as bddl_file:
+        all_lines = bddl_file.readlines()
+    extract = False
+    for line in all_lines:
+        line = line.strip()
+        if line == ")":
+            extract = False
+        if extract:
+            line = line.split('-')[-1].strip()
+            concept_list.append(line)
+        if line == "(:objects":
+            extract = True
+
+    arr = np.zeros(len(concept_dict.keys()))
+    concept_list = [concept_dict[c] for c in concept_list]
+    # with open('concepts.txt', 'a') as f:
+    #   for line in concept_list:
+    #       f.write(f"{line}\n")
+    arr[concept_list] = 1
+    return arr.tolist()

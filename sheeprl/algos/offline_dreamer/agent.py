@@ -1403,6 +1403,8 @@ def build_agent(
     player.rssm.representation_model = fabric_player.setup_module(player.rssm.representation_model)
     player.actor = fabric_player.setup_module(player.actor)
 
+    ## TODO this is where we need to freeze and reset weights according to the config cfg
+
     # Tie weights between the agent and the player
     for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
         p.data = agent_p.data

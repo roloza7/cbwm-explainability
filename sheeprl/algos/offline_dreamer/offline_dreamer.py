@@ -28,6 +28,7 @@ from sheeprl.algos.offline_dreamer.loss import reconstruction_loss
 from sheeprl.algos.offline_dreamer.utils import Moments, compute_lambda_values, prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
+from sheeprl.envs.robosuite import get_bddl_concepts
 from sheeprl.utils.distribution import (
     BernoulliSafeMode,
     MSEDistribution,
@@ -312,6 +313,8 @@ def train(
         pc,
         continues_targets,
         cfg.algo.world_model.continue_scale_factor,
+        cfg.algo.world_model.cbm_model.ortho_reg,
+        cfg.algo.world_model.cbm_model.concept_reg
     )
     kl = loss_dict['kl']
     state_loss = loss_dict['kl_loss']
@@ -439,6 +442,11 @@ def train(
         aggregator.update("Loss/continue_loss", continue_loss.detach())
         if cem_data:
             aggregator.update("Loss/concept_loss", loss_dict['concept_loss'].detach())
+            aggregator.update("Loss/orthognality_loss", loss_dict['concept_loss'].detach())
+            try:
+                aggregator.update("Loss/per_concept_loss", loss_dict['loss_per_concept'].detach())
+            except Exception as e:
+                print("something went wrong with per concept loss: ", e)
         aggregator.update("State/kl", kl.mean().detach())
         aggregator.update(
             "State/post_entropy",
@@ -534,67 +542,6 @@ from libero.libero.benchmark import get_benchmark
 from libero.lifelong.datasets import (GroupedTaskDataset, SequenceVLDataset, get_dataset)
 from libero.lifelong.utils import (get_task_embs, safe_device, create_experiment_dir)
 
-import time
-from contextlib import contextmanager
-
-@contextmanager
-def contexttimer(name):
-    start_time = time.time()
-    yield
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"[{name}] Elapsed time: {elapsed_time:.6f} seconds")
-
-
-concept_dict = {
-    'white_yellow_mug': 0,
-    'butter': 1,
-    'wine_bottle': 2,
-    'yellow_book': 3,
-    'ketchup': 4,
-    'tomato_sauce': 5,
-    'orange_juice': 6,
-    'porcelain_mug': 7,
-    'chefmate_8_frypan': 8,
-    'cream_cheese': 9,
-    'plate': 10,
-    'chocolate_pudding': 11,
-    'red_coffee_mug': 12,
-    'moka_pot': 13,
-    'basket': 14,
-    'milk': 15,
-    'white_bowl': 16,
-    'wooden_tray': 17,
-    'akita_black_bowl': 18,
-    'alphabet_soup': 19,
-    'black_book': 20,
-    'new_salad_dressing': 21
-}
-
-
-def get_bddl_concepts(file):
-    concept_list = []
-    Lines = file.readlines()
-    extract = False
-    for line in Lines:
-        line = line.strip()
-        if line == ")":
-            extract = False
-        if extract:
-            line = line.split('-')[-1].strip()
-            concept_list.append(line)
-        if line == "(:objects":
-            extract = True
-
-    arr = np.zeros(len(concept_dict.keys()))
-    concept_list = [concept_dict[c] for c in concept_list]
-    # with open('concepts.txt', 'a') as f:
-    #   for line in concept_list:
-    #       f.write(f"{line}\n")
-    arr[concept_list] = 1
-    return arr.tolist()
-
-
 def get_datasets_from_benchmark(benchmark,libero_folder,seq_len=64,obs_modality=None):
     datasets = []
     descriptions = []
@@ -620,8 +567,7 @@ def get_datasets_from_benchmark(benchmark,libero_folder,seq_len=64,obs_modality=
         task_str = benchmark.get_task_demonstration(i)[:-len('_demo.hdf5')]
         bddl_folder = Path(get_libero_path("bddl_files"))  # TODO note this has a bug in it that pathlib is just smart enough to handle
         sample_bddl_filepath = bddl_folder / (task_str + '.bddl')
-        with open(sample_bddl_filepath, 'r') as bddl_file:
-            concepts_i = get_bddl_concepts(bddl_file)
+        concepts_i = get_bddl_concepts(sample_bddl_filepath)
         concepts_dataset_i = TargetDataset(concepts_i, seq_len, len(task_i_dataset))
         task_concepts.append(concepts_dataset_i)
         # add language to the vision dataset, hence we call vl_dataset
@@ -713,6 +659,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
 
     ## Loading
     if cfg.checkpoint.pretrain_ckpt_path is not None:   # Load Pretrained model for finetuning
+        loaded_params = True
         fabric.print(f"Starting from pretrained model at : {cfg.checkpoint.pretrain_ckpt_path}")
         state = fabric.load(pathlib.Path(cfg.checkpoint.pretrain_ckpt_path))
         # All the models must be equal to the ones of the exploration phase
@@ -731,17 +678,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
         cfg.algo.cnn_keys = pretrain_cfg.algo.cnn_keys
         cfg.algo.mlp_keys = pretrain_cfg.algo.mlp_keys
     elif cfg.checkpoint.resume_from is not None:  # Finetuning that was interrupted for some reason
+        loaded_params = True
         fabric.print(f"Resuming training on: {cfg.checkpoint.resume_from}")
         state = fabric.load(pathlib.Path(cfg.checkpoint.resume_from))
     else:
-        pass
+        loaded_params = False
 
 
     # These arguments cannot be changed
     cfg.env.frame_stack = -1
     if 2 ** int(np.log2(cfg.env.screen_size)) != cfg.env.screen_size:
         raise ValueError(f"The screen size must be a power of 2, got: {cfg.env.screen_size}")
-
     # Create Logger. This will create the logger only on the
     # rank-0 process
     logger = get_logger(fabric, cfg)
@@ -820,10 +767,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
             is_continuous,
             cfg,
             observation_space,
-            state["world_model"] if cfg.checkpoint.resume_from else None,
-            state["actor"] if cfg.checkpoint.resume_from else None,
-            state["critic"] if cfg.checkpoint.resume_from else None,
-            state["target_critic"] if cfg.checkpoint.resume_from else None,
+            state["world_model"] if loaded_params else None,
+            state["actor"] if loaded_params else None,
+            state["critic"] if loaded_params else None,
+            state["target_critic"] if loaded_params else None,
         )
 
         # Optimizers
@@ -832,7 +779,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
         )
         actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters(), _convert_="all")
         critic_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic.parameters(), _convert_="all")
-        if cfg.checkpoint.resume_from:
+        if loaded_params:
             world_optimizer.load_state_dict(state["world_optimizer"])
             actor_optimizer.load_state_dict(state["actor_optimizer"])
             critic_optimizer.load_state_dict(state["critic_optimizer"])
@@ -845,7 +792,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
             cfg.algo.actor.moments.percentile.low,
             cfg.algo.actor.moments.percentile.high,
         )
-        if cfg.checkpoint.resume_from:
+        if loaded_params:
             moments.load_state_dict(state["moments"])
 
         if fabric.is_global_zero:
@@ -865,7 +812,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
             buffer_cls=SequentialReplayBuffer,
         )
-        if cfg.checkpoint.resume_from and cfg.buffer.checkpoint or (cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint):
+        if cfg.checkpoint.resume_from and cfg.buffer.checkpoint or (cfg.buffer.load_from_exploration and cfg.checkpoint.buffer.load_from_pretrain):
             if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
                 rb = state["rb"][fabric.global_rank]
             elif isinstance(state["rb"], EnvIndependentReplayBuffer):
@@ -926,6 +873,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
         step_data["truncated"] = np.zeros((1, cfg.env.num_envs, 1))
         step_data["terminated"] = np.zeros((1, cfg.env.num_envs, 1))
         step_data["is_first"] = np.ones_like(step_data["terminated"])
+        if cfg.algo.world_model.cbm_model.n_concepts:
+            step_data["targets"] = np.zeros((1, cfg.env.num_envs, cfg.algo.world_model.cbm_model.n_concepts))
         player.init_states()
 
         cumulative_per_rank_gradient_steps = 0
@@ -1011,6 +960,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
                 for k in obs_keys:
                     step_data[k] = next_obs[k][np.newaxis]
 
+                if "concepts" in infos:
+                    step_data["targets"] = np.expand_dims(np.stack(infos["concepts"]),0)
+
                 # next_obs becomes the new obs
                 obs = next_obs
 
@@ -1022,6 +974,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
                 dones_idxes = dones.nonzero()[0].tolist()
                 reset_envs = len(dones_idxes)
                 if reset_envs > 0:
+                    # import pdb; pdb.set_trace()
+                    rew_array = np.array([envs.envs[i].ep_returns for i in range(cfg.env.num_envs)])
+                    print(f"Reward/episode_max {rew_array.max()}")
+                    print(f"Reward/episode_mean {rew_array.mean()}")
+
                     reset_data = {}
                     for k in obs_keys:
                         reset_data[k] = (real_next_obs[k][dones_idxes])[np.newaxis]
@@ -1096,6 +1053,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
                 fabric.log(
                     "Params/replay_ratio", cumulative_per_rank_gradient_steps * world_size / policy_step, policy_step
                 )
+
+                rew_array = np.array([envs.envs[i].ep_returns for i in range(cfg.env.num_envs)])
+                print(f"Reward/episode_max {rew_array.max()}")
+                print(f"Reward/episode_mean {rew_array.mean()}")
+
+                ## Testing: how to save when you have wandb
+                if "wandb" in cfg.metric.logger._target_.lower():
+                    fabric.logger.log_image(key="samples", images=[batch['agentview_rgb'][0,0,...]])
 
                 # Sync distributed timers
                 if not timer.disabled:
@@ -1316,10 +1281,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
             is_continuous,
             cfg,
             observation_space,
-            state["world_model"] if cfg.checkpoint.resume_from else None,
-            state["actor"] if cfg.checkpoint.resume_from else None,
-            state["critic"] if cfg.checkpoint.resume_from else None,
-            state["target_critic"] if cfg.checkpoint.resume_from else None,
+            state["world_model"] if loaded_params else None,
+            state["actor"] if loaded_params else None,
+            state["critic"] if loaded_params else None,
+            state["target_critic"] if loaded_params else None,
         )
 
         # Optimizers
@@ -1328,7 +1293,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
         )
         actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters(), _convert_="all")
         critic_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic.parameters(), _convert_="all")
-        if cfg.checkpoint.resume_from:
+        if loaded_params:
             world_optimizer.load_state_dict(state["world_optimizer"])
             actor_optimizer.load_state_dict(state["actor_optimizer"])
             critic_optimizer.load_state_dict(state["critic_optimizer"])
@@ -1341,7 +1306,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
             cfg.algo.actor.moments.percentile.low,
             cfg.algo.actor.moments.percentile.high,
         )
-        if cfg.checkpoint.resume_from:
+        if loaded_params:
             moments.load_state_dict(state["moments"])
 
         if fabric.is_global_zero:
@@ -1439,7 +1404,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
         #             torch.zeros_like(batch['dones'].shape[0])
         # for iter_num in range(start_iter, total_iters + 1):
 
-        cfg.buffer.checkpoint = False  #only when offline learning
+        cfg.buffer.checkpoint = False  #only when offline learning TODO probably should be an assert
 
         learning_starts = 64
         for epoch in range(num_epochs):
@@ -1526,7 +1491,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
                         train_step += world_size
 
                 ## Log metrics Phase
-                # import pdb; pdb.set_trace()
                 if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
                     print(f"policy_step={policy_step}, last_log={last_log}")
                     # Sync distributed metrics
@@ -1597,7 +1561,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], pretrain_cfg: Dict[str, Any] = Non
                 iter_num += 1  # 1 for num_updates, update_samples = cfg.algo.per_rank_batch_size * fabric.world_size
 
                 if iter_num > total_iters:
-                    # import pdb; pdb.set_trace()
                     break
             else:  # Continue if the inner loop wasn't broken
                 continue

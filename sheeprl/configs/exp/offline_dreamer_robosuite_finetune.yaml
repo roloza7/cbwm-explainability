@@ -25,12 +25,14 @@ env:
 #     from_pixels: True
 
 # Buffer
-buffer:
-  load_from_exploration: False
+# buffer:
+#   load_from_pretrain: False
 
 checkpoint:
   pretrain_ckpt_path: ???
   every: 10000
+  buffer:
+    load_from_pretrain: False
 
 # Algorithm
 algo:

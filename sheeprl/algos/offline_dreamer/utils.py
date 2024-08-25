@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
 AGGREGATOR_KEYS = {
     "Rewards/rew_avg",
+    "Rewards/ep_rew_max",
+    "Rewards/ep_rew_mean",
     "Game/ep_len_avg",
     "Loss/world_model_loss",
     "Loss/value_loss",
@@ -28,6 +30,8 @@ AGGREGATOR_KEYS = {
     "Loss/state_loss",
     "Loss/continue_loss",
     "Loss/concept_loss",
+    "Loss/per_concept_loss",
+    "Loss/orthognality_loss",
     "State/kl",
     "State/post_entropy",
     "State/prior_entropy",
@@ -37,6 +41,19 @@ AGGREGATOR_KEYS = {
 }
 MODELS_TO_REGISTER = {"world_model", "actor", "critic", "target_critic", "moments"}
 
+### TODO: We need these functions but they do not work as written because of implementation complexity
+# def reset_model(model, module_list=None):
+#     for module in model.modules() and module in module_list:
+#         if isinstance(module, (nn.Conv2d, nn.Linear, nn.BatchNorm2d, nn.LayerNorm)):
+#             module.reset_parameters()
+
+# def freeze_weights(model, module_list=None):
+#     for module in model.modules() and module in module_list:
+#         if isinstance(module, (nn.Conv2d, nn.Linear, nn.BatchNorm2d, nn.LayerNorm)):
+#             module.requires_grad = False
+#         if isinstance(module, (nn.BatchNorm2d,nn.LayerNorm)):
+#             module.eval()
+#             module.track_running_stats = False
 
 class Moments(nn.Module):
     def __init__(
