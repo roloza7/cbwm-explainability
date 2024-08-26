@@ -1,8 +1,3 @@
-# from sheeprl.utils.imports import _IS_DMC_AVAILABLE
-
-# if not _IS_DMC_AVAILABLE:
-#     raise ModuleNotFoundError(_IS_DMC_AVAILABLE)
-
 from typing import Any, Dict, Optional, SupportsFloat, Tuple, Union
 import os
 
@@ -25,6 +20,7 @@ class RobosuiteWrapper(gym.Wrapper):
         env_config: str,
         robot: str,
         bddl_file: str = None,
+        initial_joint_positions : list[float] | None = None,
         controller: Any = 'OSC_POSE',
         hard_reset: bool = False,
         horizon: int = 500,
@@ -60,6 +56,7 @@ class RobosuiteWrapper(gym.Wrapper):
         self.env_config = env_config
         self.robot = robot
         self.bddl_file = bddl_file
+        self.initial_joint_positions = initial_joint_positions
         self.controller = controller
         self.hard_reset = hard_reset
         self.horizon = horizon
@@ -90,21 +87,6 @@ class RobosuiteWrapper(gym.Wrapper):
             env_name=self.env_name,
         )
 
-# robosuite_make_args=dict(
-#     env_name='PickPlace',
-#     env_configuration='single-arm-opposed',
-#     robots=['Panda'],
-#     controller_configs=suite.controllers.load_controller_config(default_controller=controller),
-#     hard_reset=False,
-#     horizon=500,
-#     reward_scale=1.0,
-#     reward_shaping=True,
-#     ignore_done=True,
-#     has_renderer=False,
-#     has_offscreen_renderer=False,
-#     use_camera_obs=False,
-#     control_freq=20,
-# )
         # Create task environment
         if self.bddl_file:
             assert os.path.exists(bddl_file)
@@ -121,6 +103,17 @@ class RobosuiteWrapper(gym.Wrapper):
         super().__init__(env)
 
         obs = self.env.reset()
+        
+        # We need this to be here because we want the environment to exist at this point
+        if self.reward_shaping and self.bddl_file:
+            # All our scenes have one goal, so this is simplified from the PickPlace implementation
+            self.__setup_staged_rewards(bddl_file)
+            self.__update_initial_distances()
+        
+        if initial_joint_positions:
+            self.env.robots[0].set_robot_joint_positions(self.initial_joint_positions)
+            # Refresh observation without stepping
+            obs = self.env._get_observations(force_update=True)
 
         obs_spec = self.env.observation_spec()
 
@@ -272,6 +265,8 @@ class RobosuiteWrapper(gym.Wrapper):
         # self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(time_step[0])
         reward = time_step[1]
+        if self.reward_shaping and self.bddl_file:
+            reward += self.staged_rewards()
         terminated = time_step[2]
         truncated = time_step[2]
         # terminated = truncated
@@ -304,7 +299,6 @@ class RobosuiteWrapper(gym.Wrapper):
                 if self.is_vector_env:
                     infos["_ep"] = np.where(dones, True, False)
 
-
         return obs, reward, terminated, truncated, infos
 
     def reset(
@@ -318,11 +312,147 @@ class RobosuiteWrapper(gym.Wrapper):
         self.ep_lengths = 0
 
         orig_obs = self.env.reset()
+        if self.initial_joint_positions:
+            self.env.robots[0].set_robot_joint_positions(self.initial_joint_positions)
+            # Resample without stepping
+            orig_obs = self.env._get_observations(force_update=True)
+            
+        self.__update_initial_distances()
+
         self.current_state = orig_obs
         # self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(orig_obs)
         return obs, {}
         # return obs, (), False, False, {}
+    
+    def __update_initial_distances(self):
+        
+        env : gym.Env = self.env
+        # Calculate starting distances to normalize
+        target_to_eef = env._gripper_to_target(
+            gripper=env.robots[0].gripper,
+            target=self._target_object['object'].root_body,
+            target_type="body",
+            return_distance=True
+        )
+        
+        goal_xy = env.sim.data.body_xpos[self._goal_location['body_geom_id']][:2]
+        object_xy = env.sim.data.body_xpos[self._target_object['body_geom_id']][:2]
+        target_to_goal = np.linalg.norm(goal_xy - object_xy)
+        
+        object_z = env.sim.data.body_xpos[self._target_object['body_geom_id']][2]
+        
+        self._initial_distances = {
+            'target_to_eef': target_to_eef,
+            'target_to_goal_xy': target_to_goal,
+            'object_z': object_z
+        }
+    
+    def __setup_staged_rewards(self, bddl_file : str):
+        
+        env : gym.Env = self.env
+        
+        goal_state = BDDLUtils.robosuite_parse_problem(bddl_file)['goal_state'][0]
+                # Hover reward relies only on xy position so in/on is identical
+        target_object = goal_state[1]
+        goal_object = goal_state[2].replace('_contain_region', '')  
+        
+        # Saved important object information
+        target_object = env.objects_dict[target_object]
+        goal_object = env.objects_dict[goal_object]
+        self._target_object = {
+            'object': target_object,
+            'body_geom_id': env.sim.model.body_name2id(target_object.root_body)
+        }
+        self._goal_location = {
+            'object': goal_object,
+            'body_geom_id': env.sim.model.body_name2id(goal_object.root_body)
+        }
+        
+    def staged_rewards(self):
+        """
+        Function to calculate staged rewards
+        Adapted from the function of the same name in robosuite.environments.manipulation.pick_place
+        """
+        assert self.reward_shaping == True
+        # The suite.make environment implements its own staged rewards
+        assert self.bddl_file
+        
+        reach_mult = 0.1
+        # Grasp multiplier set to zero (reference sets it to 0.35) but implemented for completeness
+        grasp_mult = hover_mult = 0.2
+        lift_mult = np.pi / 32
+        hover_slope_mult = 4
+        
+        r_reach = 0
+        # Normalized, > 1 if farther than initial position, [0, 1] if closer
+        eef_to_target_dist = self.env._gripper_to_target(
+            gripper=self.env.robots[0].gripper,
+            target=self._target_object['object'].root_body,
+            target_type="body",
+            return_distance=True
+        ) / self._initial_distances['target_to_eef']
+        
+        # Grasping reward
+        # Grows as independent approaches zero
+        # (1 - tanh(3x)) * 0.1
+        r_reach = (1 - np.tanh(3.0 * eef_to_target_dist)) * reach_mult
+        # Contrain to [0, reach_mult]
+        r_reach = max(0, min(r_reach, reach_mult))
+        
+        is_grasping = self.env._check_grasp(
+                    gripper=self.env.robots[0].gripper,
+                    object_geoms=self._target_object['object'].contact_geoms
+                )
+        
+        # Normalized
+        goal_xy = self.env.sim.data.body_xpos[self._goal_location['body_geom_id']][:2]
+        object_xy = self.env.sim.data.body_xpos[self._target_object['body_geom_id']][:2]
+        target_to_goal_dist = np.linalg.norm(goal_xy - object_xy) / self._initial_distances['target_to_goal_xy']
+        
+        # Grasping reward
+        r_grasp = 0.0
+        if is_grasping:
+            # (- (1 - x)**2 + 1) * 0.5 * grasp_mult
+            # x : distance to goal
+            # grasping reward decreases as one gets closer to the goal
+            r_grasp += (- (1 - target_to_goal_dist) ** 2 + 1) * 0.5 * grasp_mult
+        # Constrain to [0, 0.5 * grasp_mult]
+        r_grasp = max(0, min(r_grasp, grasp_mult * 0.5))
+        
+        r_lift = 0.0
+        
+        # Lift reward
+        distance_lifted = self.env.sim.data.body_xpos[self._target_object['body_geom_id']][2] - self._initial_distances['object_z']
+        distance_lifted = max(distance_lifted, 0) # Safeguard for dropping the object below initial position
+        # l(z) = tanh(4z) * pi/32
+        # z : distance lifted
+        r_lift = np.tanh(4 * distance_lifted) * lift_mult
+        # Penalty is applied as object gets closer to goal
+        # p(x) = tanh(8x)
+        # Goes to zero as x -> 0
+        lift_penalty = np.tanh(8 * target_to_goal_dist)
+        r_lift = r_lift * lift_penalty    
+        
+        # Constrain to [0, pi/32]
+        r_lift = max(0, min(r_lift, lift_mult))    
+                
+        # Hover reward
+        # h(x) = ((1 - x)**2 + slope_mult * (1 - x)) * 0.5 * hover_mult
+        r_hover = 0.0
+        r_hover = ((1 - target_to_goal_dist)**2 + hover_slope_mult * (1 - target_to_goal_dist)) * 0.5 * hover_mult
+        
+        # Constrain to [0, (1 + slope_multiplier) * 0.5 * hover_mult]
+        r_hover = max(0, min(r_hover, (1 + hover_slope_mult) * 0.5 * hover_mult))
+        
+        # Uncomment if you need this at some point        
+        # print("distance_to_goal: {}".format(target_to_goal_dist))
+        # print("r_reach: {}, r_grasp: {}, r_lift: {}, r_hover: {}".format(r_reach, r_grasp, r_lift, r_hover))
+
+                
+        return r_reach + r_grasp + r_lift + r_hover
+
+    
 
     def compute_reward(self, achieved_goal, desired_goal, info):
         """
@@ -336,13 +466,14 @@ class RobosuiteWrapper(gym.Wrapper):
         Returns:
             float: environment reward
         """
-        # Dummy args used to mimic Wrapper interface
-        return self.env.reward()
+        if self.bddl_file and self.reward_shaping:
+            return self.env.reward() + self.staged_rewards()
+        else:
+            return self.env.reward()
 
     def render(self): # -> RenderFrame | list[RenderFrame] | None:
         # self.sim._render_context_offscreen
         return self.env._get_observations()['agentview_image']
-
 
 
 concept_dict = {
