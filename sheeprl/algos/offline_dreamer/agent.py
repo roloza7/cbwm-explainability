@@ -221,8 +221,6 @@ class CNNDecoder(nn.Module):
         )
 
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        # import pdb 
-        # pdb.set_trace()
         cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
         return {k: rec_obs for k, rec_obs in zip(self.keys, torch.split(cnn_out, self.output_channels, -3))}
 
@@ -956,7 +954,7 @@ class CEM(nn.Module):
         self.concept_context_generators = torch.nn.ModuleList()
         self.sigmoid = torch.nn.Sigmoid()
         for c in range(self.n_concepts):
-            
+
             self.concept_context_generators.append(
                 torch.nn.Sequential(*[
                     torch.nn.Linear(self.input_size,
@@ -980,19 +978,18 @@ class CEM(nn.Module):
         all_concept_latent=None
         all_concepts=None
         all_logits=None
-        for c in range(self.n_concepts+1): 
+        for c in range(self.n_concepts+1):
             ### 1 generate context
             context= self.concept_context_generators[c](h)
             if c < self.n_concepts :
                 ### 2 get prob given concept
                 if(probs==None):
                     logits =  self.concept_prob_generators[c](context)
-                    prob_gumbel = F.softmax(logits)
+                    prob_gumbel = F.softmax(logits, dim=-1)  # TODO why are we using softmax here?
                 else:
                     logits=probs[c]
-                    prob_gumbel = F.softmax(logits)
+                    prob_gumbel = F.softmax(logits, dim=-1)
 
-                # import pdb; pdb.set_trace()
                 for i in range(self.concept_bins[c]):
                     temp_concept_latent =  context[:,:, (i*self.emb_size):((i+1)*self.emb_size)].permute(2,0,1) * prob_gumbel[:,:,i] #.unsqueeze(-1)
                     if i==0:
@@ -1004,23 +1001,24 @@ class CEM(nn.Module):
                     all_concept_latent=concept_latent
                 else:
                     all_concept_latent= torch.cat((all_concept_latent,concept_latent),-1)
-                
+
                 if all_concepts == None:
                     all_concepts=prob_gumbel
                     all_logits=logits
+                    expanded_logits = logits.unsqueeze(-2)
                 else:
-                    all_concepts=torch.cat((all_concepts,prob_gumbel),-1)
+                    all_concepts=torch.cat((all_concepts,prob_gumbel),-1)  # List of probabilities
                     all_logits=torch.cat((all_logits,logits),-1)
+                    expanded_logits = torch.cat((expanded_logits,logits.unsqueeze(-2)),-2)
 
-            else:
+            else:  # non-concept latent ==  residual
                 if non_concept_latent== None:
                     non_concept_latent= context
                 else:
                     non_concept_latent= torch.cat((non_concept_latent,context),-1)
 
         latent = torch.cat((all_concepts,all_concept_latent,non_concept_latent),-1)
-
-        return latent, all_logits, all_concept_latent, non_concept_latent
+        return latent, expanded_logits, all_concept_latent, non_concept_latent
 
     def sample_latent(self, latent_shape) -> torch.Tensor:
         latent = torch.randn(latent_shape)
@@ -1096,8 +1094,6 @@ def build_agent(
     recurrent_state_size = world_model_cfg.recurrent_model.recurrent_state_size
     stochastic_size = world_model_cfg.stochastic_size * world_model_cfg.discrete_size
     latent_state_size = stochastic_size + recurrent_state_size
-    # import pdb 
-    # pdb.set_trace()
     cem_latent_state_size = (world_model_cfg.cbm_model.n_concepts + 1) * world_model_cfg.cbm_model.emb_size + \
         sum(world_model_cfg.cbm_model.concept_bins)
 
@@ -1267,7 +1263,7 @@ def build_agent(
             latent_state_size,
             world_model_cfg.cbm_model.concept_type,
             fabric,
-        )
+        ).to(fabric.device)
         world_model = CBWM(
             encoder.apply(init_weights),
             rssm,
@@ -1275,7 +1271,7 @@ def build_agent(
             reward_model.apply(init_weights),
             continue_model.apply(init_weights),
             concept_bottleneck_model.apply(init_weights),
-        ) 
+        )
 
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
     actor: Actor | MinedojoActor = actor_cls(
@@ -1406,6 +1402,8 @@ def build_agent(
     player.rssm.transition_model = fabric_player.setup_module(player.rssm.transition_model)
     player.rssm.representation_model = fabric_player.setup_module(player.rssm.representation_model)
     player.actor = fabric_player.setup_module(player.actor)
+
+    ## TODO this is where we need to freeze and reset weights according to the config cfg
 
     # Tie weights between the agent and the player
     for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):

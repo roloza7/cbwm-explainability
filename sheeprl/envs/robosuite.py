@@ -1,8 +1,3 @@
-# from sheeprl.utils.imports import _IS_DMC_AVAILABLE
-
-# if not _IS_DMC_AVAILABLE:
-#     raise ModuleNotFoundError(_IS_DMC_AVAILABLE)
-
 from typing import Any, Dict, Optional, SupportsFloat, Tuple, Union
 import os
 
@@ -12,6 +7,10 @@ import robosuite as suite
 from gymnasium import spaces
 import libero.libero.envs.bddl_utils as BDDLUtils
 from libero.libero.envs import TASK_MAPPING  #*
+import time
+import pdb
+
+
 
 ## TODO It doesn't seem like this should be a wrapper, but just following DMC here
 class RobosuiteWrapper(gym.Wrapper):
@@ -20,7 +19,7 @@ class RobosuiteWrapper(gym.Wrapper):
         env_name: str,
         env_config: str,
         robot: str,
-        bddl_file = None,
+        bddl_file: str = None,
         initial_joint_positions : list[float] | None = None,
         controller: Any = 'OSC_POSE',
         hard_reset: bool = False,
@@ -30,7 +29,8 @@ class RobosuiteWrapper(gym.Wrapper):
         ignore_done: bool = True,
         has_renderer: bool = False,
         has_offscreen_renderer: bool = False,
-        use_camera_obs: bool = False,
+        use_camera_obs: bool = True,
+        use_vector_obs: bool = False,
         control_freq: int = 20,
         keys=None,
         channels_first = True
@@ -66,6 +66,7 @@ class RobosuiteWrapper(gym.Wrapper):
         self.has_renderer = has_renderer
         self.has_offscreen_renderer = has_offscreen_renderer
         self.use_camera_obs = use_camera_obs
+        self.use_vector_obs = use_vector_obs
         self.control_freq = control_freq
 
         libero_args=dict(
@@ -86,21 +87,6 @@ class RobosuiteWrapper(gym.Wrapper):
             env_name=self.env_name,
         )
 
-# robosuite_make_args=dict(
-#     env_name='PickPlace',
-#     env_configuration='single-arm-opposed',
-#     robots=['Panda'],
-#     controller_configs=suite.controllers.load_controller_config(default_controller=controller),
-#     hard_reset=False,
-#     horizon=500,
-#     reward_scale=1.0,
-#     reward_shaping=True,
-#     ignore_done=True,
-#     has_renderer=False,
-#     has_offscreen_renderer=False,
-#     use_camera_obs=False,
-#     control_freq=20,
-# )
         # Create task environment
         if self.bddl_file:
             assert os.path.exists(bddl_file)
@@ -108,8 +94,8 @@ class RobosuiteWrapper(gym.Wrapper):
             env = TASK_MAPPING[problem_info["problem_name"]](
                 bddl_file_name=bddl_file,
                 **libero_args,
-            )               
-                
+            )
+            self.concepts = np.array(get_bddl_concepts(self.bddl_file))
         else:
             env = suite.make(**libero_args,
                              **extra_robosuite_make_args)
@@ -148,26 +134,27 @@ class RobosuiteWrapper(gym.Wrapper):
             if self.env.use_camera_obs:
                 keys += [f"{cam_name}_image" for cam_name in self.env.camera_names]
                 obs_shape = (3, self._height, self._width) if channels_first else (self._height, self._width, 3)
-                obs_space["rgb"] = spaces.Box(low=0, high=255, shape=obs_shape, dtype=np.uint8)
+                obs_space["agentview_rgb"] = spaces.Box(low=0, high=255, shape=obs_shape, dtype=np.uint8)
             # Iterate over all robots to add to state
-            for idx in range(len(self.env.robots)):
-                keys += ["robot{}_proprio-state".format(idx)]
-                if idx == 0:
-                    obs_space["state"] = spaces.Box(low=-1,
-                                                    high=1,
-                                                    shape=obs_spec["robot{}_proprio-state".format(idx)].shape,
-                                                    dtype=obs_spec["robot{}_proprio-state".format(idx)].dtype)  # TODO: does this need to be numpy?
-                    # _spec_to_box(self.env.observation_spec().values(), np.float64)
-                else:
-                    obs_space[f"state{idx}"] = spaces.Box(low=-1,
-                                                    high=1,
-                                                    shape=obs_spec["robot{}_proprio-state".format(idx)].shape,
-                                                    dtype=obs_spec["robot{}_proprio-state".format(idx)].dtype)  # TODO: does this need to be numpy?
+            if self.use_vector_obs:
+                for idx in range(len(self.env.robots)):
+                    keys += ["robot{}_proprio-state".format(idx)]
+                    if idx == 0:
+                        obs_space["state"] = spaces.Box(low=-1,
+                                                        high=1,
+                                                        shape=obs_spec["robot{}_proprio-state".format(idx)].shape,
+                                                        dtype=obs_spec["robot{}_proprio-state".format(idx)].dtype)  # TODO: does this need to be numpy?
+                        # _spec_to_box(self.env.observation_spec().values(), np.float64)
+                    else:
+                        obs_space[f"state{idx}"] = spaces.Box(low=-1,
+                                                        high=1,
+                                                        shape=obs_spec["robot{}_proprio-state".format(idx)].shape,
+                                                        dtype=obs_spec["robot{}_proprio-state".format(idx)].dtype)  # TODO: does this need to be numpy?
         else:
             raise NotImplementedError
         self.keys = list(set(keys))
 
-        self._from_vectors = 'robot0_proprio-state' in keys
+        self._from_vectors = use_vector_obs  # 'robot0_proprio-state' in keys
 
         # # Get reward range
         # self.reward_range = (0, self.env.reward_scale)
@@ -185,7 +172,8 @@ class RobosuiteWrapper(gym.Wrapper):
         self._observation_space = spaces.Dict(obs_space)
 
         # state space
-        self._state_space = obs_space["state"]  # Just copying the dmc implementation
+        if "state" in obs_space:
+            self._state_space = obs_space["state"]  # Just copying the dmc implementation
         self.current_state = None
         # render
         self._render_mode: str = "rgb_array"
@@ -193,8 +181,11 @@ class RobosuiteWrapper(gym.Wrapper):
         self._metadata = {}
         # self._metadata = {"render_fps": 30}
         # set seed
-        self.seed = 10
-        
+        self.seed = 10  #TODO this should come from the config
+
+        self.ep_returns = []
+        self.ep_length = 0
+
 
     def __getattr__(self, name):
         return getattr(self.env, name)
@@ -206,7 +197,7 @@ class RobosuiteWrapper(gym.Wrapper):
             rgb_obs = obs_data['agentview_image']
             if self._channels_first:
                 rgb_obs = rgb_obs.transpose(2, 0, 1).copy()
-            obs["rgb"] = rgb_obs
+            obs["agentview_rgb"] = rgb_obs
         if self._from_vectors:
             obs["state"] = obs_data["robot{}_proprio-state".format(0)]
         return obs
@@ -282,6 +273,32 @@ class RobosuiteWrapper(gym.Wrapper):
         infos = time_step[3]
         infos["discount"] = .997  # TODO: I don't know if thats correct
         infos["internal_state"] = time_step[0]
+        infos["concepts"] = self.concepts
+
+        self.ep_returns.append(reward)
+        self.ep_lengths += 1
+        dones = np.logical_or(terminated, truncated)
+        num_dones = np.sum(dones)
+        if num_dones:
+            pdb.set_trace()
+            if "ep" in infos or "_ep" in infos:
+                raise ValueError(
+                    "Attempted to add episode stats when they already exist"
+                )
+            else:
+                pdb.set_trace()
+                infos["ep"] = {
+                    "r": np.where(dones, self.ep_returns, 0.0),
+                    "l": np.where(dones, self.ep_lengths, 0),
+                    "t": np.where(
+                        dones,
+                        np.round(time.perf_counter() - self.ep_start_times, 6),
+                        0.0,
+                    ),
+                }
+                if self.is_vector_env:
+                    infos["_ep"] = np.where(dones, True, False)
+
         return obs, reward, terminated, truncated, infos
 
     def reset(
@@ -290,6 +307,10 @@ class RobosuiteWrapper(gym.Wrapper):
         if not isinstance(seed, np.random.RandomState):
             seed = np.random.RandomState(seed)
         # self.env.task._random = seed
+        self.ep_start_times = time.perf_counter()
+        self.ep_returns = []  # np.zeros(self.num_envs, dtype=np.float32)
+        self.ep_lengths = 0
+
         orig_obs = self.env.reset()
         if self.initial_joint_positions:
             self.env.robots[0].set_robot_joint_positions(self.initial_joint_positions)
@@ -297,7 +318,7 @@ class RobosuiteWrapper(gym.Wrapper):
             orig_obs = self.env._get_observations(force_update=True)
             
         self.__update_initial_distances()
-        
+
         self.current_state = orig_obs
         # self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(orig_obs)
@@ -326,7 +347,6 @@ class RobosuiteWrapper(gym.Wrapper):
             'target_to_goal_xy': target_to_goal,
             'object_z': object_z
         }
-
     
     def __setup_staged_rewards(self, bddl_file : str):
         
@@ -348,8 +368,6 @@ class RobosuiteWrapper(gym.Wrapper):
             'object': goal_object,
             'body_geom_id': env.sim.model.body_name2id(goal_object.root_body)
         }
-        
-        
         
     def staged_rewards(self):
         """
@@ -448,12 +466,62 @@ class RobosuiteWrapper(gym.Wrapper):
         Returns:
             float: environment reward
         """
-        # Dummy args used to mimic Wrapper interface
         if self.bddl_file and self.reward_shaping:
             return self.env.reward() + self.staged_rewards()
-        
-        return self.env.reward()
+        else:
+            return self.env.reward()
 
     def render(self): # -> RenderFrame | list[RenderFrame] | None:
         # self.sim._render_context_offscreen
         return self.env._get_observations()['agentview_image']
+
+
+concept_dict = {
+    'white_yellow_mug': 0,
+    'butter': 1,
+    'wine_bottle': 2,
+    'yellow_book': 3,
+    'ketchup': 4,
+    'tomato_sauce': 5,
+    'orange_juice': 6,
+    'porcelain_mug': 7,
+    'chefmate_8_frypan': 8,
+    'cream_cheese': 9,
+    'plate': 10,
+    'chocolate_pudding': 11,
+    'red_coffee_mug': 12,
+    'moka_pot': 13,
+    'basket': 14,
+    'milk': 15,
+    'white_bowl': 16,
+    'wooden_tray': 17,
+    'akita_black_bowl': 18,
+    'alphabet_soup': 19,
+    'black_book': 20,
+    'new_salad_dressing': 21,
+    'bbq_sauce': 22,
+}
+
+
+def get_bddl_concepts(file_name):
+    concept_list = []
+    with open(file_name, 'r') as bddl_file:
+        all_lines = bddl_file.readlines()
+    extract = False
+    for line in all_lines:
+        line = line.strip()
+        if line == ")":
+            extract = False
+        if extract:
+            line = line.split('-')[-1].strip()
+            concept_list.append(line)
+        if line == "(:objects":
+            extract = True
+
+    arr = np.zeros(len(concept_dict.keys()))
+    concept_list = [concept_dict[c] for c in concept_list]
+    # with open('concepts.txt', 'a') as f:
+    #   for line in concept_list:
+    #       f.write(f"{line}\n")
+    arr[concept_list] = 1
+    return arr.tolist()

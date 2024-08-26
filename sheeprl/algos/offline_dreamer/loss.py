@@ -8,30 +8,38 @@ from torch.distributions.kl import kl_divergence
 
 
 def get_concept_index(model, c):
-	if c==0:
-		start=0
-	else:
-		start=sum(model.concept_bins[:c])
-	end= sum(model.concept_bins[:c+1])
+    if c==0:
+        start=0
+    else:
+        start=sum(model.concept_bins[:c])
+    end= sum(model.concept_bins[:c+1])
 
-	return start, end
+    return start, end
 
 
-def get_concept_loss(model, predicted_concepts, concepts, isList=False):
-	concept_loss = 0
-	loss_ce = torch.nn.CrossEntropyLoss()
-	concept_loss_lst=[]
-	for c in range(model.n_concepts):
-		start,end = get_concept_index(model,c)
-		c_predicted_concepts=predicted_concepts[:,start:end]
-		if(not isList):
-			c_real_concepts=concepts[:,start:end]
-		else:
-			c_real_concepts=concepts[c]
-		c_concept_loss = loss_ce(c_predicted_concepts, c_real_concepts)
-		concept_loss+=c_concept_loss
-		concept_loss_lst.append(c_concept_loss)
-	return concept_loss, concept_loss_lst
+def get_concept_loss(model, predicted_concepts, target_concepts, isList=False):
+    ## TODO im not even sure this is right...it seems like from the paper that the
+    ## label predictor is supposed to take 2x embeddings as input and then predict
+    ## n_concept labels. But here we predicting n_concept labels?
+    concept_loss = 0
+    predicted_concepts = predicted_concepts.float()
+    if target_concepts is None:
+        target_concepts = (torch.rand(predicted_concepts.size()) > 0.5) * 1  # TODO replace with actual concepts
+        target_concepts = target_concepts.to(predicted_concepts.device)
+        print("Randomly generated target concepts")
+    else:
+        target_concepts = target_concepts.unsqueeze(-1)
+        target_concepts = torch.cat((target_concepts,1-target_concepts),-1)   # To supervise the doubled concept predictions
+        # target_concepts.repeat_interleave(repeats=model.concept_bins[0],dim=-1)   # To supervise the doubled concept predictions
+    target_concepts = target_concepts.float()
+    pred_perm = predicted_concepts.permute(1,3,0,2)
+    tar_perm = target_concepts.permute(1,3,0,2)
+    # loss_bce = torch.nn.BCEWithLogitsLoss(reduction='none')
+    loss_ce = torch.nn.CrossEntropyLoss(reduction='none')
+    losses = loss_ce(pred_perm, tar_perm)
+    loss_per_concept = losses.mean(dim=[0,1])
+    concept_loss = loss_per_concept.mean()
+    return concept_loss, loss_per_concept
 
 
 def OrthogonalProjectionLoss(embed1, embed2):
@@ -61,6 +69,8 @@ def reconstruction_loss(
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
     continue_scale_factor: float = 1.0,
+    ortho_reg: float = 0.1,
+    concept_reg: float = 0.1,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     Compute the reconstruction loss as described in Eq. 5 in
@@ -89,6 +99,10 @@ def reconstruction_loss(
             Default to None.
         continue_scale_factor (float): the scale factor for the continue loss.
             Default to 10.
+        ortho_reg (float): scale factor of the CEM orthonal loss.
+            Default to 0.1.
+        concept_reg (float): scale factor of the CEM concept loss.
+            Default to 0.1.
 
     Returns:
         observation_loss (Tensor): the value of the observation loss.
@@ -119,26 +133,37 @@ def reconstruction_loss(
     else:
         continue_loss = torch.zeros_like(reward_loss)
 
+    loss_dict = {
+        'kl':kl.mean(),
+        'kl_loss':kl_loss.mean(),
+        'reward_loss':reward_loss.mean(),
+        'observation_loss':observation_loss.mean(),
+        'continue_loss':continue_loss.mean(),
+    }
     if use_cbm is False:
         reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss).mean()
     else:
         #TODO replace with actual concepts
-        pred_concepts, real_concept_latent, real_non_concept_latent, rand_concept_latent, rand_non_concept_latent = cem_data
-        real_concepts = (torch.rand(pred_concepts.size()) > 0.5) * 1
-        pred_concepts = pred_concepts.float()
-        real_concepts = real_concepts.float()
-        concept_loss, _ = get_concept_loss(world_model.cem, pred_concepts, real_concepts)
-        orthognality_loss = 0
-        for c in range(world_model.cem.n_concepts):
-            orthognality_loss+=(OrthogonalProjectionLoss(real_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size], real_non_concept_latent))
-            orthognality_loss+=(OrthogonalProjectionLoss(rand_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size], rand_non_concept_latent))
-        cbm_loss = concept_loss + orthognality_loss
+        pred_concepts, target_concepts, real_concept_latent, real_non_concept_latent, rand_concept_latent, rand_non_concept_latent = cem_data
+        concept_loss, loss_per_concept = get_concept_loss(world_model.cem, pred_concepts, target_concepts)
+        loss_dict['concept_loss'] = concept_loss.mean()
+        loss_dict['loss_per_concept'] = loss_per_concept
+        orthognality_loss = []
+        for c in range(world_model.cem.n_concepts):  #TODO why sum?
+            orthognality_loss.append(OrthogonalProjectionLoss(
+                real_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size],
+                real_non_concept_latent))
+            orthognality_loss.append(OrthogonalProjectionLoss(
+                rand_concept_latent[:, :, c*world_model.cem.emb_size: (c*world_model.cem.emb_size) + world_model.cem.emb_size],
+                rand_non_concept_latent))
+        loss_dict['orthognality_loss'] = torch.stack(orthognality_loss).mean()
+
+        cbm_loss = concept_reg * concept_loss + ortho_reg * loss_dict['orthognality_loss']
+        loss_dict['cbm_loss'] = cbm_loss.mean()
+
         reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss + cbm_loss).mean()
+
     return (
         reconstruction_loss,
-        kl.mean(),
-        kl_loss.mean(),
-        reward_loss.mean(),
-        observation_loss.mean(),
-        continue_loss.mean(),
+        loss_dict
     )
