@@ -8,7 +8,8 @@ from gymnasium import spaces
 import libero.libero.envs.bddl_utils as BDDLUtils
 from libero.libero.envs import TASK_MAPPING  #*
 import time
-import pdb
+from functools import reduce
+import operator
 
 
 
@@ -20,7 +21,7 @@ class RobosuiteWrapper(gym.Wrapper):
         env_config: str,
         robot: str,
         bddl_file: str = None,
-        initial_joint_positions : list[float] | None = None,
+        initial_joint_positions: list[float] | None = None,
         controller: Any = 'OSC_POSE',
         hard_reset: bool = False,
         horizon: int = 500,
@@ -32,8 +33,9 @@ class RobosuiteWrapper(gym.Wrapper):
         use_camera_obs: bool = True,
         use_vector_obs: bool = False,
         control_freq: int = 20,
-        keys=None,
-        channels_first = True
+        keys: None = None,
+        channels_first: bool = True,
+        action_repeat: int = 1
         ):
         """Robosuite wrapper
         Args:
@@ -59,7 +61,7 @@ class RobosuiteWrapper(gym.Wrapper):
         self.initial_joint_positions = initial_joint_positions
         self.controller = controller
         self.hard_reset = hard_reset
-        self.horizon = horizon
+        self.horizon = horizon*action_repeat
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
         self.ignore_done = ignore_done
@@ -68,6 +70,7 @@ class RobosuiteWrapper(gym.Wrapper):
         self.use_camera_obs = use_camera_obs
         self.use_vector_obs = use_vector_obs
         self.control_freq = control_freq
+        self.action_repeat = action_repeat
 
         libero_args=dict(
             env_configuration=self.env_config,
@@ -103,13 +106,13 @@ class RobosuiteWrapper(gym.Wrapper):
         super().__init__(env)
 
         obs = self.env.reset()
-        
+
         # We need this to be here because we want the environment to exist at this point
         if self.reward_shaping and self.bddl_file:
             # All our scenes have one goal, so this is simplified from the PickPlace implementation
-            self.__setup_staged_rewards(bddl_file)
-            self.__update_initial_distances()
-        
+            self._setup_staged_rewards(bddl_file)
+            self._update_initial_distances()
+
         if initial_joint_positions:
             self.env.robots[0].set_robot_joint_positions(self.initial_joint_positions)
             # Refresh observation without stepping
@@ -183,9 +186,38 @@ class RobosuiteWrapper(gym.Wrapper):
         # set seed
         self.seed = 10  #TODO this should come from the config
 
-        self.ep_returns = []
+        self.step_returns = {
+            'extrinsic': -1*np.ones(self.horizon*20),
+            'intrinsic': {
+                'reach': -1*np.ones(self.horizon*20),
+                'grasp': -1*np.ones(self.horizon*20),
+                'lift': -1*np.ones(self.horizon*20),
+                'hover': -1*np.ones(self.horizon*20)
+            }
+        }
+        self.ep_stats = {
+            'length': [],
+            'extrinsic': [],
+            'intrinsic': {
+                'reach': {
+                    'mean': [],
+                    'max': [],
+                    },
+                'grasp': {
+                    'mean': [],
+                    'max': [],
+                    },
+                'lift': {
+                    'mean': [],
+                    'max': [],
+                    },
+                'hover': {
+                    'mean': [],
+                    'max': [],
+                    },
+            }
+        }
         self.ep_length = 0
-
 
     def __getattr__(self, name):
         return getattr(self.env, name)
@@ -220,7 +252,6 @@ class RobosuiteWrapper(gym.Wrapper):
                     print("adding key: {}".format(key))
                 ob_lst.append(np.array(obs_dict[key]).flatten())
         return np.concatenate(ob_lst)
-
 
     # def _convert_action(self, action) -> np.ndarray:
     #     action = action.astype(np.float64)
@@ -265,8 +296,12 @@ class RobosuiteWrapper(gym.Wrapper):
         # self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(time_step[0])
         reward = time_step[1]
-        if self.reward_shaping and self.bddl_file:
-            reward += self.staged_rewards()
+        # try:
+        self.step_returns['extrinsic'][self.ep_length] = reward
+        # except Exception as e:
+        #     import pdb; pdb.set_trace()
+        # if self.reward_shaping and self.bddl_file:
+        #     reward += self.staged_rewards()
         terminated = time_step[2]
         truncated = time_step[2]
         # terminated = truncated
@@ -275,29 +310,22 @@ class RobosuiteWrapper(gym.Wrapper):
         infos["internal_state"] = time_step[0]
         infos["concepts"] = self.concepts
 
-        self.ep_returns.append(reward)
-        self.ep_lengths += 1
-        dones = np.logical_or(terminated, truncated)
-        num_dones = np.sum(dones)
-        if num_dones:
-            pdb.set_trace()
-            if "ep" in infos or "_ep" in infos:
-                raise ValueError(
-                    "Attempted to add episode stats when they already exist"
-                )
-            else:
-                pdb.set_trace()
-                infos["ep"] = {
-                    "r": np.where(dones, self.ep_returns, 0.0),
-                    "l": np.where(dones, self.ep_lengths, 0),
-                    "t": np.where(
-                        dones,
-                        np.round(time.perf_counter() - self.ep_start_times, 6),
-                        0.0,
-                    ),
-                }
-                if self.is_vector_env:
-                    infos["_ep"] = np.where(dones, True, False)
+        if self.reward_shaping and self.bddl_file:
+            r_reach, r_grasp, r_lift, r_hover = self.staged_rewards()
+            reward += sum([r_reach, r_grasp, r_lift, r_hover])
+            staged_rewards = {
+                'reach': r_reach,
+                'grasp': r_grasp,
+                'lift': r_lift,
+                'hover': r_hover
+            }
+            for key in staged_rewards.keys():
+                # try:
+                self.step_returns['intrinsic'][key][self.ep_length] = staged_rewards[key]
+                # except Exception as e:
+                #     import pdb; pdb.set_trace()
+
+        self.ep_length += 1
 
         return obs, reward, terminated, truncated, infos
 
@@ -308,16 +336,40 @@ class RobosuiteWrapper(gym.Wrapper):
             seed = np.random.RandomState(seed)
         # self.env.task._random = seed
         self.ep_start_times = time.perf_counter()
-        self.ep_returns = []  # np.zeros(self.num_envs, dtype=np.float32)
-        self.ep_lengths = 0
+        # self.ep_returns = []  # np.zeros(self.num_envs, dtype=np.float32)
+
+        # Accumulate stats
+        if (self.step_returns['extrinsic'] > -1).any():
+            self.ep_stats['extrinsic'].append(
+                self.step_returns['extrinsic'][self.step_returns['extrinsic'] > -1].mean())
+            for key in self.ep_stats['intrinsic'].keys():
+                self.ep_stats['intrinsic'][key]['mean'].append(
+                    self.step_returns['intrinsic'][key][self.step_returns['intrinsic'][key] > -1].mean())
+                self.ep_stats['intrinsic'][key]['max'].append(
+                    self.step_returns['intrinsic'][key][self.step_returns['intrinsic'][key] > -1].max())
+
+            self.ep_stats['length'].append(self.ep_length)
+
+            # Reset step statistics
+            self.step_returns = {
+                'extrinsic': -1*np.ones(self.horizon),
+                'intrinsic': {
+                    'reach': -1*np.ones(self.horizon),
+                    'grasp': -1*np.ones(self.horizon),
+                    'lift': -1*np.ones(self.horizon),
+                    'hover': -1*np.ones(self.horizon)
+                }
+            }
+            self.ep_length = 0
 
         orig_obs = self.env.reset()
         if self.initial_joint_positions:
             self.env.robots[0].set_robot_joint_positions(self.initial_joint_positions)
             # Resample without stepping
             orig_obs = self.env._get_observations(force_update=True)
-            
-        self.__update_initial_distances()
+
+        if self.reward_shaping and self.bddl_file:
+            self._update_initial_distances()
 
         # Reset staged rewards accumulator
         if self.reward_shaping and self.bddl_file:
@@ -328,9 +380,47 @@ class RobosuiteWrapper(gym.Wrapper):
         obs = self._get_obs(orig_obs)
         return obs, {}
         # return obs, (), False, False, {}
-    
-    def __update_initial_distances(self):
-        
+
+    def get_env_stats(self, stats_dict = None, reset: bool = False) -> Dict[str, Any]:
+        if len(self.ep_stats['length']) == 0:
+            return None
+        elif stats_dict is not None:
+            def get_nested_value(d, keys):
+                try:
+                    return reduce(operator.getitem, keys, d)
+                except KeyError:
+                    return None  # or handle the error as needed
+
+            tracked_stats = {key: get_nested_value(self.ep_stats, value) for key, value in stats_dict.items()}
+        else:
+            tracked_stats = self.ep_stats.copy()
+
+        if reset:
+            self.ep_stats = {
+                'length': [],
+                'extrinsic': [],
+                'intrinsic': {
+                    'reach': {
+                        'mean': [],
+                        'max': [],
+                        },
+                    'grasp': {
+                        'mean': [],
+                        'max': [],
+                        },
+                    'lift': {
+                        'mean': [],
+                        'max': [],
+                        },
+                    'hover': {
+                        'mean': [],
+                        'max': [],
+                        },
+                }
+            }
+        return tracked_stats
+
+    def _update_initial_distances(self):
         env : gym.Env = self.env
         # Calculate starting distances to normalize
         target_to_eef = env._gripper_to_target(
@@ -339,28 +429,27 @@ class RobosuiteWrapper(gym.Wrapper):
             target_type="body",
             return_distance=True
         )
-        
+
         goal_xy = env.sim.data.body_xpos[self._goal_location['body_geom_id']][:2]
         object_xy = env.sim.data.body_xpos[self._target_object['body_geom_id']][:2]
         target_to_goal = np.linalg.norm(goal_xy - object_xy)
-        
+
         object_z = env.sim.data.body_xpos[self._target_object['body_geom_id']][2]
-        
+
         self._initial_distances = {
             'target_to_eef': target_to_eef,
             'target_to_goal_xy': target_to_goal,
             'object_z': object_z
         }
-    
-    def __setup_staged_rewards(self, bddl_file : str):
-        
+
+    def _setup_staged_rewards(self, bddl_file : str):
         env : gym.Env = self.env
-        
+
         goal_state = BDDLUtils.robosuite_parse_problem(bddl_file)['goal_state'][0]
                 # Hover reward relies only on xy position so in/on is identical
         target_object = goal_state[1]
-        goal_object = goal_state[2].replace('_contain_region', '')  
-        
+        goal_object = goal_state[2].replace('_contain_region', '')
+
         # Saved important object information
         target_object = env.objects_dict[target_object]
         goal_object = env.objects_dict[goal_object]
@@ -372,9 +461,9 @@ class RobosuiteWrapper(gym.Wrapper):
             'object': goal_object,
             'body_geom_id': env.sim.model.body_name2id(goal_object.root_body)
         }
-        
+
         self.max_lift_ep = 0
-        
+
     def staged_rewards(self):
         """
         Function to calculate staged rewards
@@ -383,12 +472,12 @@ class RobosuiteWrapper(gym.Wrapper):
         assert self.reward_shaping == True
         # The suite.make environment implements its own staged rewards
         assert self.bddl_file
-        
+
         reach_mult = 0.2
         # Grasp multiplier set to zero (reference sets it to 0.35) but implemented for completeness
         grasp_mult = hover_mult = 0.2
         lift_mult = np.pi / 32
-        
+
         r_reach = 0
         # Normalized, > 1 if farther than initial position, [0, 1] if closer
         eef_to_target_dist = self.env._gripper_to_target(
@@ -397,24 +486,24 @@ class RobosuiteWrapper(gym.Wrapper):
             target_type="body",
             return_distance=True
         ) / self._initial_distances['target_to_eef']
-        
+
         # Grasping reward
         # Grows as independent approaches zero
         r_reach = ((1 - eef_to_target_dist) ** 2) * reach_mult
         # Constrain to [0, reach_mult]
         # If statement to prevent reward from increasing if dist > 1
         r_reach = max(0, min(r_reach, reach_mult)) if eef_to_target_dist <= 1 else 0
-        
+
         is_grasping = self.env._check_grasp(
                     gripper=self.env.robots[0].gripper,
                     object_geoms=self._target_object['object'].contact_geoms
                 )
-        
+
         # Normalized
         goal_xy = self.env.sim.data.body_xpos[self._goal_location['body_geom_id']][:2]
         object_xy = self.env.sim.data.body_xpos[self._target_object['body_geom_id']][:2]
         target_to_goal_dist = np.linalg.norm(goal_xy - object_xy) / self._initial_distances['target_to_goal_xy']
-        
+
         # Grasping reward
         r_grasp = 0.0
         if is_grasping:
@@ -424,9 +513,9 @@ class RobosuiteWrapper(gym.Wrapper):
         # Constrain to [0, 0.5 * grasp_mult]
         # If statement prevents reward from decreasing if target_to_goal > 1
         r_grasp = max(0, min(r_grasp, grasp_mult)) if target_to_goal_dist <= 1 else grasp_mult
-        
+
         r_lift = 0.0
-        
+
         # Lift reward
         distance_lifted = self.env.sim.data.body_xpos[self._target_object['body_geom_id']][2] - self._initial_distances['object_z']
         distance_lifted = max(distance_lifted, 0) # Safeguard for dropping the object below initial position
@@ -438,28 +527,25 @@ class RobosuiteWrapper(gym.Wrapper):
         # Goes to zero as x -> 0
         lift_penalty = np.tanh(20 * target_to_goal_dist)
         r_lift = r_lift * lift_penalty
-        
+
         # Constrain to [0, pi/32]
-        r_lift = max(0, min(r_lift, lift_mult))    
-        
+        r_lift = max(0, min(r_lift, lift_mult))
+
         self.max_lift_ep = max(self.max_lift_ep, r_lift)
-        
+
         r_hover = 0.0
         if self.max_lift_ep > 0.03:
             # Hover reward
             r_hover = ((1.25 - 1.25  * target_to_goal_dist)**2) * hover_mult
-            
+
             # If prevents reward from increasing if target_to_goal > 1
             r_hover = max(0, min(r_hover, 1.5625 * hover_mult)) if target_to_goal_dist <= 1 else 0
-        
-        # Uncomment if you need this at some point        
+
+        # Uncomment if you need this at some point
         # print("distance_to_goal: {}".format(target_to_goal_dist))
         # print("r_reach: {}, r_grasp: {}, r_lift: {}, r_hover: {}".format(r_reach, r_grasp, r_lift, r_hover))
 
-                
-        return r_reach + r_grasp + r_lift + r_hover
-
-    
+        return r_reach, r_grasp, r_lift, r_hover
 
     def compute_reward(self, achieved_goal, desired_goal, info):
         """
@@ -506,7 +592,9 @@ concept_dict = {
     'alphabet_soup': 19,
     'black_book': 20,
     'new_salad_dressing': 21,
-    'bbq_sauce': 22,
+    'bbq_sauce': 22,  #Not in libero90
+    # 'cookies': 23,  #Not in libero90
+    # 'glazed_rim_porcelain_ramekin': 24,  # Not in libero90
 }
 
 
