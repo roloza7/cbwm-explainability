@@ -473,9 +473,9 @@ class RobosuiteWrapper(gym.Wrapper):
         # The suite.make environment implements its own staged rewards
         assert self.bddl_file
 
-        reach_mult = 0.2
+        reach_mult = 0.25
         # Grasp multiplier set to zero (reference sets it to 0.35) but implemented for completeness
-        grasp_mult = hover_mult = 0.2
+        grasp_mult = hover_mult = 0.1
         lift_mult = np.pi / 32
 
         r_reach = 0
@@ -525,8 +525,8 @@ class RobosuiteWrapper(gym.Wrapper):
         # Penalty is applied as object gets closer to goal
         # p(x) = tanh(20x)
         # Goes to zero as x -> 0
-        lift_penalty = np.tanh(20 * target_to_goal_dist)
-        r_lift = r_lift * lift_penalty
+        lift_interpolate_progress = np.tanh(10 * (target_to_goal_dist + 1 / 50))
+        r_lift = r_lift * lift_interpolate_progress + (1 - lift_interpolate_progress) * 0.08
 
         # Constrain to [0, pi/32]
         r_lift = max(0, min(r_lift, lift_mult))
@@ -536,10 +536,11 @@ class RobosuiteWrapper(gym.Wrapper):
         r_hover = 0.0
         if self.max_lift_ep > 0.03:
             # Hover reward
-            r_hover = ((1.25 - 1.25  * target_to_goal_dist)**2) * hover_mult
+            r_hover = ((1.75 - 1.75  * target_to_goal_dist)**2) * hover_mult
 
             # If prevents reward from increasing if target_to_goal > 1
-            r_hover = max(0, min(r_hover, 1.5625 * hover_mult)) if target_to_goal_dist <= 1 else 0
+            # Max is derived from h(0)
+            r_hover = max(0, min(r_hover, 3.0625 * hover_mult)) if target_to_goal_dist <= 1 else 0
 
         # Uncomment if you need this at some point
         # print("distance_to_goal: {}".format(target_to_goal_dist))
