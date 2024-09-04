@@ -296,6 +296,8 @@ class RobosuiteWrapper(gym.Wrapper):
         # self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(time_step[0])
         reward = time_step[1]
+        if time_step[2]:
+            reward = reward * self.ep_length
         # try:
         self.step_returns['extrinsic'][self.ep_length] = reward
         # except Exception as e:
@@ -308,6 +310,8 @@ class RobosuiteWrapper(gym.Wrapper):
         infos = time_step[3]
         infos["discount"] = .997  # TODO: I don't know if thats correct
         infos["internal_state"] = time_step[0]
+        
+        
         infos["concepts"] = self.concepts
 
         if self.reward_shaping and self.bddl_file:
