@@ -302,10 +302,14 @@ class RobosuiteWrapper(gym.Wrapper):
         # self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(time_step[0])
         reward = time_step[1]
+        # Final reward scaling on truncation
         if time_step[2]:
             reward = reward * self.ep_length
         # try:
         self.step_returns['extrinsic'][self.ep_length] = reward
+        
+        reward = self.compute_reward()
+        
         # except Exception as e:
         #     import pdb; pdb.set_trace()
         # if self.reward_shaping and self.bddl_file:
@@ -319,21 +323,6 @@ class RobosuiteWrapper(gym.Wrapper):
         
         
         infos["concepts"] = self.concepts
-
-        if self.reward_shaping and self.bddl_file:
-            r_reach, r_grasp, r_lift, r_hover = self.staged_rewards()
-            reward += sum([r_reach, r_grasp, r_lift, r_hover])
-            staged_rewards = {
-                'reach': r_reach,
-                'grasp': r_grasp,
-                'lift': r_lift,
-                'hover': r_hover
-            }
-            for key in staged_rewards.keys():
-                # try:
-                self.step_returns['intrinsic'][key][self.ep_length] = staged_rewards[key]
-                # except Exception as e:
-                #     import pdb; pdb.set_trace()
 
         self.ep_length += 1
 
@@ -558,7 +547,8 @@ class RobosuiteWrapper(gym.Wrapper):
 
         return r_reach, r_grasp, r_lift, r_hover
 
-    def compute_reward(self, achieved_goal, desired_goal, info):
+    # kwargs here to keep compatibility with gym inteface
+    def compute_reward(self, achieved_goal = None, desired_goal = None, info = None):
         """
         Dummy function to be compatible with gym interface that simply returns environment reward
 
@@ -570,10 +560,25 @@ class RobosuiteWrapper(gym.Wrapper):
         Returns:
             float: environment reward
         """
-        if self.bddl_file and self.reward_shaping:
-            return self.env.reward() + self.staged_rewards()
-        else:
-            return self.env.reward()
+        
+        reward = self.env.reward()
+        
+        if self.reward_shaping and self.bddl_file:
+            r_reach, r_grasp, r_lift, r_hover = self.staged_rewards()
+            reward += sum([r_reach, r_grasp, r_lift, r_hover])
+            staged_rewards = {
+                'reach': r_reach,
+                'grasp': r_grasp,
+                'lift': r_lift,
+                'hover': r_hover
+            }
+            for key in staged_rewards.keys():
+                # try:
+                self.step_returns['intrinsic'][key][self.ep_length] = staged_rewards[key]
+                # except Exception as e:
+                #     import pdb; pdb.set_trace()
+
+        return reward
 
     def render(self): # -> RenderFrame | list[RenderFrame] | None:
         # self.sim._render_context_offscreen
