@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional, SupportsFloat, Tuple, Union
+from sheeprl.utils.utils import dotdict
 import os
 
 import gymnasium as gym
@@ -26,7 +27,7 @@ class RobosuiteWrapper(gym.Wrapper):
         hard_reset: bool = False,
         horizon: int = 500,
         reward_scale: float = 1.0,
-        reward_shaping: bool = True,
+        reward_shaping: dotdict = None,
         ignore_done: bool = True,
         has_renderer: bool = False,
         has_offscreen_renderer: bool = False,
@@ -63,7 +64,7 @@ class RobosuiteWrapper(gym.Wrapper):
         self.hard_reset = hard_reset
         self.horizon = horizon*action_repeat
         self.reward_scale = reward_scale
-        self.reward_shaping = reward_shaping
+        self.reward_shaping = dotdict(reward_shaping)
         self.ignore_done = ignore_done
         self.has_renderer = has_renderer
         self.has_offscreen_renderer = has_offscreen_renderer
@@ -79,7 +80,7 @@ class RobosuiteWrapper(gym.Wrapper):
             hard_reset=self.hard_reset,
             horizon=self.horizon,
             reward_scale=self.reward_scale,
-            reward_shaping=self.reward_shaping,
+            reward_shaping=not self.reward_shaping.disable,
             ignore_done=self.ignore_done,
             has_renderer=self.has_renderer,
             has_offscreen_renderer=self.has_offscreen_renderer,
@@ -108,7 +109,7 @@ class RobosuiteWrapper(gym.Wrapper):
         obs = self.env.reset()
 
         # We need this to be here because we want the environment to exist at this point
-        if self.reward_shaping and self.bddl_file:
+        if not self.reward_shaping.disable and self.bddl_file:
             # All our scenes have one goal, so this is simplified from the PickPlace implementation
             self._setup_staged_rewards(bddl_file)
             self._update_initial_distances()
@@ -367,11 +368,11 @@ class RobosuiteWrapper(gym.Wrapper):
             # Resample without stepping
             orig_obs = self.env._get_observations(force_update=True)
 
-        if self.reward_shaping and self.bddl_file:
+        if not self.reward_shaping.disable and self.bddl_file:
             self._update_initial_distances()
 
         # Reset staged rewards accumulator
-        if self.reward_shaping and self.bddl_file:
+        if not self.reward_shaping.disable and self.bddl_file:
             self.max_lift_ep = 0
 
         self.current_state = orig_obs
@@ -468,14 +469,15 @@ class RobosuiteWrapper(gym.Wrapper):
         Function to calculate staged rewards
         Adapted from the function of the same name in robosuite.environments.manipulation.pick_place
         """
-        assert self.reward_shaping == True
+        assert self.reward_shaping.disable == False
         # The suite.make environment implements its own staged rewards
         assert self.bddl_file
 
-        reach_mult = 0.25
+        reach_mult = self.reward_shaping.stages.reach.mult
         # Grasp multiplier set to zero (reference sets it to 0.35) but implemented for completeness
-        grasp_mult = hover_mult = 0.1
-        lift_mult = np.pi / 32
+        grasp_mult = self.reward_shaping.stages.grasp.mult
+        hover_mult = self.reward_shaping.stages.hover.mult
+        lift_mult = self.reward_shaping.stages.lift.mult
 
         r_reach = 0
         # Normalized, > 1 if farther than initial position, [0, 1] if closer
@@ -563,15 +565,44 @@ class RobosuiteWrapper(gym.Wrapper):
         
         reward = self.env.reward()
         
-        if self.reward_shaping and self.bddl_file:
+        if not self.reward_shaping.disable and self.bddl_file:
             r_reach, r_grasp, r_lift, r_hover = self.staged_rewards()
-            reward += sum([r_reach, r_grasp, r_lift, r_hover])
+            if self.reward_shaping.dense:
+                reward += sum([r_reach, r_grasp, r_lift, r_hover])
+            else:
+                tol = self.reward_shaping.tolerance
+                reach_mult, grasp_mult, lift_mult, hover_mult = (
+                    self.reward_shaping.stages.reach.mult,
+                    self.reward_shaping.stages.grasp.mult,
+                    self.reward_shaping.stages.lift.mult,
+                    self.reward_shaping.stages.hover.mult,
+                )
+                grasp_step, lift_step, hover_step = (
+                    self.reward_shaping.stages.grasp.step,
+                    self.reward_shaping.stages.lift.step,
+                    self.reward_shaping.stages.hover.step
+                )
+                if r_hover >= tol:
+                    reward += r_hover + sum((reach_mult, grasp_mult, lift_mult)) + sum((grasp_step, lift_step, hover_step)) # Saturating previous rewards
+                    # print("hover")
+                elif r_lift >= tol:
+                    reward += r_lift + sum((reach_mult, grasp_mult)) + sum((grasp_step, lift_step))
+                    # print("lift")
+                elif r_grasp >= tol:
+                    reward += r_grasp + reach_mult + grasp_step
+                    # print("grasp")
+                else:
+                    reward += r_reach
+                    # print("reach")
+                
             staged_rewards = {
                 'reach': r_reach,
                 'grasp': r_grasp,
                 'lift': r_lift,
                 'hover': r_hover
             }
+            # print([(k, v) for k, v in staged_rewards.items()])
+            # print(reward)
             for key in staged_rewards.keys():
                 # try:
                 self.step_returns['intrinsic'][key][self.ep_length] = staged_rewards[key]
