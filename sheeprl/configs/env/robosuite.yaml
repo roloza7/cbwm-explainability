@@ -55,7 +55,7 @@ wrapper:
   reward_scale: 1.0
   reward_shaping:
     disable: False
-    dense: False
+    mode: nvidia # summer | stepped | nvidia
     stages:
       reach:
         mult: 0.25

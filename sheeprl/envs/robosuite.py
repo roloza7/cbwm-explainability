@@ -7,6 +7,7 @@ import numpy as np
 import robosuite as suite
 from gymnasium import spaces
 import libero.libero.envs.bddl_utils as BDDLUtils
+from robosuite.utils.sim_utils import check_contact
 from libero.libero.envs import TASK_MAPPING  #*
 import time
 from functools import reduce
@@ -430,15 +431,17 @@ class RobosuiteWrapper(gym.Wrapper):
             return_distance=True
         )
 
-        goal_xy = env.sim.data.body_xpos[self._goal_location['body_geom_id']][:2]
-        object_xy = env.sim.data.body_xpos[self._target_object['body_geom_id']][:2]
-        target_to_goal = np.linalg.norm(goal_xy - object_xy)
+        goal_xyz = env.sim.data.body_xpos[self._goal_location['body_geom_id']]
+        object_xyz = env.sim.data.body_xpos[self._target_object['body_geom_id']]
+        target_to_goal_xy = np.linalg.norm(goal_xyz[:2] - object_xyz[:2])
+        target_to_goal_xyz = np.linalg.norm(goal_xyz - object_xyz)
 
         object_z = env.sim.data.body_xpos[self._target_object['body_geom_id']][2]
 
         self._initial_distances = {
             'target_to_eef': target_to_eef,
-            'target_to_goal_xy': target_to_goal,
+            'target_to_goal_xy': target_to_goal_xy,
+            'target_to_goal_xyz': target_to_goal_xyz,   
             'object_z': object_z
         }
 
@@ -549,6 +552,51 @@ class RobosuiteWrapper(gym.Wrapper):
 
         return r_reach, r_grasp, r_lift, r_hover
 
+    def nvidia_staged_rewards(self):
+        """
+        Computes isaac-style dense rewards
+        Uses robosuite functions to calculate distance
+        """
+        
+        reward = 0.0
+    
+        # Reaching reward
+        # Normalized, > 1 if farther than initial position, [0, 1] if closer
+        eef_to_target_dist = self.env._gripper_to_target(
+            gripper=self.env.robots[0].gripper,
+            target=self._target_object['object'].root_body,
+            target_type="body",
+            return_distance=True
+        ) / self._initial_distances['target_to_eef']
+        
+        reward = reach_reward = 2 * (1 - np.tanh(5 * eef_to_target_dist))
+        
+        # Grasp and place reward
+        goal_xyz = self.env.sim.data.body_xpos[self._goal_location['body_geom_id']]
+        object_xyz = self.env.sim.data.body_xpos[self._target_object['body_geom_id']]
+        target_to_goal_dist = np.linalg.norm(goal_xyz - object_xyz) / self._initial_distances['target_to_goal_xyz']
+        
+        # [0, 1]
+        place_reward = 1 - np.tanh(5.0 * target_to_goal_dist)
+        
+        names = ['gripper0_finger1_pad_collision', 'gripper0_finger2_pad_collision']
+        
+        # Grasp
+        # Requires contact with BOTH pads and hand at least a bit open
+        is_left_contact = check_contact(self.env.sim, names[0], self._target_object['object'])
+        is_right_contact = check_contact(self.env.sim, names[1], self._target_object['object'])
+        is_touching = is_left_contact and is_right_contact
+        
+        finger1_col = self.env.sim.data.geom_xpos[self.env.sim.model.geom_name2id("gripper0_finger1_collision")]
+        finger2_col = self.env.sim.data.geom_xpos[self.env.sim.model.geom_name2id("gripper0_finger2_collision")]
+        is_open = np.linalg.norm(finger1_col - finger2_col) > 0.02 # Magic number, model starts at 0.06419 (significantly open)    
+        
+        # As per the isaac cube stack definition
+        if is_touching and is_open:
+            reward = (4 + place_reward)
+            
+        return reward, reach_reward, 4 if is_touching and is_open else 0, place_reward 
+
     # kwargs here to keep compatibility with gym inteface
     def compute_reward(self, achieved_goal = None, desired_goal = None, info = None):
         """
@@ -566,10 +614,11 @@ class RobosuiteWrapper(gym.Wrapper):
         reward = self.env.reward()
         
         if not self.reward_shaping.disable and self.bddl_file:
-            r_reach, r_grasp, r_lift, r_hover = self.staged_rewards()
-            if self.reward_shaping.dense:
+            if self.reward_shaping.mode == 'summed': # TODO: Change this name (mode : str = 'summed' | 'stepped' | 'nvidia')
+                r_reach, r_grasp, r_lift, r_hover = self.staged_rewards()
                 reward += sum([r_reach, r_grasp, r_lift, r_hover])
-            else:
+            elif self.reward_shaping.mode == 'stepped':
+                r_reach, r_grasp, r_lift, r_hover = self.staged_rewards()
                 tol = self.reward_shaping.tolerance
                 reach_mult, grasp_mult, lift_mult, hover_mult = (
                     self.reward_shaping.stages.reach.mult,
@@ -593,7 +642,11 @@ class RobosuiteWrapper(gym.Wrapper):
                     # print("grasp")
                 else:
                     reward += r_reach
-                    # print("reach")
+                    # print("reach")   
+            elif self.reward_shaping.mode == 'nvidia':
+                dense_reward, r_reach, r_grasp, r_hover = self.nvidia_staged_rewards()
+                reward += dense_reward
+                r_lift = 0 # For consistency with logging
                 
             staged_rewards = {
                 'reach': r_reach,
