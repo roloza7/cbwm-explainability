@@ -541,10 +541,14 @@ import timeit
 from pathlib import Path
 # from torchvision import transforms
 from torchvision.transforms import v2
-from libero.libero import get_libero_path
-from libero.libero.benchmark import get_benchmark
-from libero.lifelong.datasets import (GroupedTaskDataset, SequenceVLDataset, get_dataset)
-from libero.lifelong.utils import (get_task_embs, safe_device, create_experiment_dir)
+import warnings
+try:
+    from libero.libero import get_libero_path
+    from libero.libero.benchmark import get_benchmark
+    from libero.lifelong.datasets import (GroupedTaskDataset, SequenceVLDataset, get_dataset)
+    from libero.lifelong.utils import (get_task_embs, safe_device, create_experiment_dir)
+except ImportError:
+    warnings.warn("Failed to import libero installation, missing requirements")
 
 def get_datasets_from_benchmark(benchmark,libero_folder,seq_len=64,obs_modality=None):
     datasets = []
