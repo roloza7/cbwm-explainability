@@ -132,21 +132,22 @@ class CrafterWrapper(gym.Wrapper):
         
         print(material_presence, can_make, near_hostile, player_health, player_hunger)
         
-        return np.concatenate([material_presence, can_make, near_hostile, player_health, player_hunger])
+        return {"concepts": np.concatenate([material_presence, can_make, near_hostile, player_health, player_hunger])}
         
     def _convert_obs(self, obs: np.ndarray, info : Dict[str, Any]) -> Dict[str, np.ndarray]:
-        return {"rgb": obs} | self._get_concepts(info)
+        return {"rgb": obs}, info | self._get_concepts(info)
         
     def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         obs, reward, done, info = self.env.step(action)
-        return self._convert_obs(obs), reward, done and info["discount"] == 0, done and info["discount"] != 0, self._get_concepts(info)
+        obs, info = self._convert_obs(obs, info)
+        return obs, reward, done and info["discount"] == 0, done and info["discount"] != 0, info
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[Any, Dict[str, Any]]:
         self.env._seed = seed
         obs = self.env.reset()
-        return self._convert_obs(obs, {}), {}
+        return self._convert_obs(obs, {})
 
     def render(self) -> Optional[Union[RenderFrame, List[RenderFrame]]]:
         return self.env.render()
